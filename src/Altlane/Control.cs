@@ -17,8 +17,11 @@ sealed class ControlWindow : NativeWindow, IDisposable
     public static readonly uint MsgSettings = N.RegisterWindowMessage("Altlane.ShowSettings");
     /// <summary>Test mode only: remove the keyboard hook the way Windows would, so the self-test can watch the watchdog.</summary>
     public static readonly uint MsgDropHook = N.RegisterWindowMessage("Altlane.Test.DropHook");
+    /// <summary>Test mode only: wParam 1 switches Alt+Tab to the columns layout, 0 back to the grid. Not saved.</summary>
+    public static readonly uint MsgLayout = N.RegisterWindowMessage("Altlane.Test.Layout");
 
     public event Action? QuitRequested, SettingsRequested, DropHookRequested;
+    public event Action<bool>? LayoutRequested;
     readonly bool _test;
     /// <summary>Event time (GetTickCount clock) of the last raw keyboard input, and how many arrived.</summary>
     public int LastRaw { get; private set; }
@@ -54,6 +57,7 @@ sealed class ControlWindow : NativeWindow, IDisposable
         else if ((uint)m.Msg == MsgQuit) QuitRequested?.Invoke();
         else if ((uint)m.Msg == MsgSettings) SettingsRequested?.Invoke();
         else if (_test && (uint)m.Msg == MsgDropHook) DropHookRequested?.Invoke();
+        else if (_test && (uint)m.Msg == MsgLayout) LayoutRequested?.Invoke(m.WParam != IntPtr.Zero);
         base.WndProc(ref m);
     }
 

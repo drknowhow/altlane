@@ -9,12 +9,14 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using static Altlane.Layouts;
 
 namespace Altlane;
 
 /// <summary>
-/// Layout A: a Recent row, then one section per group, each a row of cards with live DWM thumbnails.
-/// Built in code on a Canvas so every thumbnail rect is known exactly. Never takes activation
+/// Alt+Tab's view: a Recent section, then one section per group, each with cards that hold live DWM
+/// thumbnails. The grid (layout A) wraps the sections into rows; the columns layout (layout C) gives
+/// each section a column. Built in code on a Canvas so every thumbnail rect is known exactly. Never takes activation
 /// (WS_EX_NOACTIVATE); the keyboard hook feeds it keys instead. AllowsTransparency stays false
 /// because DWM thumbnails don't draw into layered windows.
 /// </summary>
@@ -28,8 +30,7 @@ sealed class Overlay : Window
         B(0xE1, 0xE5, 0xE9), B(0x00, 0x5F, 0xB8), B(0xE4, 0xE8, 0xEB), B(0xE4, 0xE8, 0xEB));
     static readonly FontFamily Ui = new("Segoe UI Variable Text, Segoe UI"), Mono = new("Cascadia Mono, Consolas");
 
-    const double Pad = 14, CardGap = 6, SecGapX = 16, SecGapY = 12, HeadH = 22, HeadGap = 4, CapH = 20, CardPad = 5;
-    const double MaxCard = 232, MinCard = 96, FilterH = 30, FootH = 44;
+    const double Pad = 14, FilterH = 30, FootH = 44;
 
     readonly Canvas _canvas = new();
     readonly Dictionary<Slot, Border> _cards = new();
@@ -105,11 +106,11 @@ sealed class Overlay : Window
     /// <summary>Create the HWND and draw real cards with real thumbnails once, off-screen, so the first
     /// real show doesn't pay for first-time WPF and DWM setup.</summary>
     /// <param name="warm">Called once the off-screen frame is drawn and the window is hidden again.</param>
-    public void Prewarm(List<Section> secs, Action? warm = null)
+    public void Prewarm(List<Section> secs, bool columns, Action? warm = null)
     {
         new WindowInteropHelper(this).EnsureHandle();
         _offscreen = true;
-        ShowSections(secs, null, "", 0, "", "", offscreen: true);
+        ShowSections(secs, null, "", 0, "", "", columns, offscreen: true);
         EventHandler? done = null;
         done = (_, _) =>
         {
@@ -121,7 +122,8 @@ sealed class Overlay : Window
 
     /// <param name="why">Footer line for the selected window.</param>
     /// <param name="hints">Key hints for the footer's second line.</param>
-    public void ShowSections(List<Section> secs, Slot? sel, string filter, int hidden, string why, string hints, bool offscreen = false)
+    /// <param name="columns">The columns layout instead of the grid.</param>
+    public void ShowSections(List<Section> secs, Slot? sel, string filter, int hidden, string why, string hints, bool columns = false, bool offscreen = false)
     {
         long tReq = Stopwatch.GetTimestamp();
         _toastTimer.Stop();
@@ -135,7 +137,7 @@ sealed class Overlay : Window
         double workW = _mon.width, workH = _mon.height;
         double maxW = workW * 0.92 - 2 * Pad;
         double maxH = workH * 0.88 - 2 * Pad - (filter.Length > 0 ? FilterH : 0) - FootH;
-        var L = Layout(secs, maxW, maxH);
+        var L = columns ? Layouts.Columns(secs, maxW, maxH) : Layouts.Grid(secs, maxW, maxH);
 
         double innerW = Math.Max(L.width, 560);
         double winW = innerW + 2 * Pad;
@@ -159,7 +161,7 @@ sealed class Overlay : Window
             Place(empty, Pad, oy + 24);
             L = L with { height = 70 };
         }
-        foreach (var h in L.heads) Place(Header(h.S), ox + h.X + 4, oy + h.Y);
+        foreach (var h in L.heads) Place(Header(h.S, h.W), ox + h.X + (h.W > 0 ? 0 : 4), oy + h.Y);
         var slots = new List<(IntPtr src, Rect r)>();
         foreach (var c in L.cards)
         {
@@ -219,76 +221,14 @@ sealed class Overlay : Window
 
     void Place(UIElement e, double x, double y) { Canvas.SetLeft(e, x); Canvas.SetTop(e, y); _canvas.Children.Add(e); }
 
-    // ---------- layout ----------
-
-    sealed record CardPos(Slot Slot, Item Item, double X, double Y);
-    sealed record HeadPos(Section S, double X, double Y);
-    sealed record LayoutResult(double width, double height, double cw, double thumbH, List<CardPos> cards, List<HeadPos> heads);
-
-    /// <summary>
-    /// Sections flow left to right and wrap, each centered row as in the design. Card width starts
-    /// large and shrinks until everything fits the screen; a section wider than the screen wraps its cards.
-    /// </summary>
-    static LayoutResult Layout(List<Section> secs, double maxW, double maxH)
-    {
-        for (double cw = MaxCard; ; cw -= 8)
-        {
-            double thumbH = Math.Round(cw * 10 / 16);
-            double cardH = CardH(thumbH);
-            int perLine = Math.Max(1, (int)((maxW + CardGap) / (cw + CardGap)));
-            var sizes = secs.Select(s =>
-            {
-                int n = s.Items.Count, k = Math.Min(n, perLine), lines = (n + perLine - 1) / perLine;
-                return (w: k * cw + (k - 1) * CardGap, h: HeadH + HeadGap + lines * cardH + (lines - 1) * CardGap);
-            }).ToList();
-
-            var rows = new List<List<int>>();
-            double rowW = 0;
-            for (int i = 0; i < sizes.Count; i++)
-            {
-                if (rows.Count == 0 || rowW + SecGapX + sizes[i].w > maxW) { rows.Add(new List<int>()); rowW = -SecGapX; }
-                rows[^1].Add(i);
-                rowW += SecGapX + sizes[i].w;
-            }
-            double width = rows.Count == 0 ? 0 : rows.Max(r => r.Sum(i => sizes[i].w) + (r.Count - 1) * SecGapX);
-            double height = rows.Sum(r => r.Max(i => sizes[i].h)) + Math.Max(0, rows.Count - 1) * SecGapY;
-            if (height > maxH && cw - 8 >= MinCard) continue;
-
-            var cards = new List<CardPos>();
-            var heads = new List<HeadPos>();
-            double y = 0;
-            foreach (var r in rows)
-            {
-                double rw = r.Sum(i => sizes[i].w) + (r.Count - 1) * SecGapX;
-                double x = (width - rw) / 2;
-                foreach (int i in r)
-                {
-                    var s = secs[i];
-                    heads.Add(new HeadPos(s, x, y));
-                    for (int j = 0; j < s.Items.Count; j++)
-                    {
-                        int line = j / perLine, col = j % perLine;
-                        cards.Add(new CardPos(new Slot(s.Key, s.Items[j].W.Hwnd), s.Items[j],
-                            x + col * (cw + CardGap), y + HeadH + HeadGap + line * (cardH + CardGap)));
-                    }
-                    x += sizes[i].w + SecGapX;
-                }
-                y += r.Max(i => sizes[i].h) + SecGapY;
-            }
-            return new LayoutResult(width, height, cw, thumbH, cards, heads);
-        }
-    }
-
-    /// <summary>Card height: ring and padding, the thumbnail, a gap, the caption, padding and ring.</summary>
-    static double CardH(double thumbH) => CardPad + thumbH + 4 + CapH + CardPad;
-
     // ---------- pieces ----------
 
-    UIElement Header(Section s)
+    /// <param name="w">Column width in the columns layout, where the header spans its column; 0 in the grid.</param>
+    UIElement Header(Section s, double w = 0)
     {
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Height = HeadH };
+        var parts = new List<FrameworkElement>();
         if (s.Num is int num)
-            row.Children.Add(new Border
+            parts.Add(new Border
             {
                 MinWidth = 17, Height = 17, Padding = new Thickness(4, 0, 4, 0), CornerRadius = new CornerRadius(4),
                 Background = _t.Badge, BorderBrush = _t.Edge, BorderThickness = new Thickness(1), Margin = new Thickness(0, 0, 7, 0),
@@ -296,10 +236,24 @@ sealed class Overlay : Window
                 Child = new TextBlock { Text = num.ToString(), FontFamily = Mono, FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = _t.Muted, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center },
             });
         if (s.Color.Length > 0)
-            row.Children.Add(new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(2), Background = Hex(s.Color), Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center });
-        row.Children.Add(new TextBlock { Text = s.Label, FontFamily = Ui, FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = s.Num == null ? _t.Muted : _t.Ink, VerticalAlignment = VerticalAlignment.Center });
-        row.Children.Add(new TextBlock { Text = "  " + s.Items.Count, FontFamily = Ui, FontSize = 12.5, Foreground = _t.Muted, VerticalAlignment = VerticalAlignment.Center });
-        return row;
+            parts.Add(new Border { Width = 8, Height = 8, CornerRadius = new CornerRadius(2), Background = Hex(s.Color), Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center });
+        var label = new TextBlock { Text = s.Label, FontFamily = Ui, FontSize = 12.5, FontWeight = FontWeights.SemiBold, Foreground = s.Num == null ? _t.Muted : _t.Ink, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+        var count = new TextBlock { Text = "  " + s.Items.Count, FontFamily = Ui, FontSize = 12.5, Foreground = _t.Muted, VerticalAlignment = VerticalAlignment.Center };
+        if (w <= 0)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Height = HeadH };
+            foreach (var part in parts) row.Children.Add(part);
+            row.Children.Add(label);
+            row.Children.Add(count);
+            return row;
+        }
+        // Columns: the count at the right edge, the name cut short to fit, a rule in the group's colour.
+        var dock = new DockPanel { LastChildFill = true, Margin = new Thickness(4, 0, 4, 0) };
+        foreach (var part in parts) { DockPanel.SetDock(part, Dock.Left); dock.Children.Add(part); }
+        DockPanel.SetDock(count, Dock.Right);
+        dock.Children.Add(count);
+        dock.Children.Add(label);
+        return new Border { Width = w, Height = HeadH, BorderThickness = new Thickness(0, 0, 0, 2), BorderBrush = s.Color.Length > 0 ? Hex(s.Color) : _t.Edge, Child = dock };
     }
 
     Border Card(Item it, Slot slot, double cw, double thumbH)

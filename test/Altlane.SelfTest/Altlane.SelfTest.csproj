@@ -21,6 +21,7 @@
     <Compile Include="..\..\src\Altlane\Activator.cs" Link="Shared\Activator.cs" />
     <Compile Include="..\..\src\Altlane\Rules.cs" Link="Shared\Rules.cs" />
     <Compile Include="..\..\src\Altlane\Sections.cs" Link="Shared\Sections.cs" />
+    <Compile Include="..\..\src\Altlane\Layouts.cs" Link="Shared\Layouts.cs" />
     <Compile Include="..\..\src\Altlane\WindowTracker.cs" Link="Shared\WindowTracker.cs" />
   </ItemGroup>
 

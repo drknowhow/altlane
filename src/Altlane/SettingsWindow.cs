@@ -42,6 +42,12 @@ sealed class SettingsWindow : Window
         root.Children.Add(Note($"Version {version}{(AdminTask.SelfElevated ? ", running as administrator" : "")}. Alt+Tab, grouped by kind of window."));
 
         root.Children.Add(Head("Switching"));
+        var layoutRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        layoutRow.Children.Add(new TextBlock { Text = "Alt+Tab layout:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
+        layoutRow.Children.Add(Radio("Grid", Settings.GridLayout));
+        layoutRow.Children.Add(Radio("Columns", Settings.ColumnsLayout));
+        root.Children.Add(layoutRow);
+        root.Children.Add(Note("Grid: the groups wrap into rows, and ← → step through the cards. Columns: one column per group, ↑ ↓ move within it and ← → across. Tab, ` and the number keys work the same in both.", indent: false));
         root.Children.Add(Check("Alt+` cycles the windows in the current window's group", s.SameGroupKey, v => s.SameGroupKey = v));
         root.Children.Add(Check("Alt+1 to Alt+9 jump to the most recent window in that group", s.DirectJump, v => s.DirectJump = v));
         root.Children.Add(Note("Off unless you want it: some apps use Alt+number for their own shortcuts.", indent: true));
@@ -168,6 +174,13 @@ sealed class SettingsWindow : Window
         c.Checked += (_, _) => { if (!_quiet) { set(true); _changed(); } };
         c.Unchecked += (_, _) => { if (!_quiet) { set(false); _changed(); } };
         return c;
+    }
+
+    RadioButton Radio(string text, string layout)
+    {
+        var r = new RadioButton { Content = text, GroupName = "layout", IsChecked = _s.Layout == layout, Margin = new Thickness(0, 0, 16, 0), VerticalAlignment = VerticalAlignment.Center };
+        r.Checked += (_, _) => { if (!_quiet) { _s.Layout = layout; _changed(); } };
+        return r;
     }
 
     static Button Btn(string text, Action a)

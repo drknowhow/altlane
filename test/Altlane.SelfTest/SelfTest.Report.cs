@@ -51,7 +51,7 @@ static partial class SelfTest
         var altRows = steps.Where(r => r["test"] is not "T11").ToList();
         var t10 = Rows.FirstOrDefault(r => r["test"] is "T10" && r.GetValueOrDefault("what") is "reinstall");
         var t11 = Rows.Where(r => r["test"] is "T11").ToList();
-        string[] shots = { "alt-tab", "same-group", "filter", "regroup" };
+        string[] shots = { "alt-tab", "columns", "same-group", "filter", "regroup" };
 
         var criteria = new Dictionary<string, bool>
         {

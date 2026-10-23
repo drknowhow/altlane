@@ -5,7 +5,7 @@ using System.Linq;
 
 namespace Altlane;
 
-/// <summary>Rules and sections logic, with no windows or keys involved. Prints one line per check.</summary>
+/// <summary>Rules, sections and layout logic, with no windows or keys involved. Prints one line per check.</summary>
 static class UnitChecks
 {
     static int _fail, _pass;
@@ -26,6 +26,7 @@ static class UnitChecks
         MoveScopes();
         SaveRules();
         SectionsLogic();
+        LayoutLogic();
         Console.WriteLine($"\n{_pass} passed, {_fail} failed");
         return _fail == 0 ? 0 : 1;
     }
@@ -177,6 +178,16 @@ static class UnitChecks
         Check("number 5 jumps to Files", Sections.Group(secs, 5) == new Slot("files", (IntPtr)6));
         Check("number 4 (Creative, empty) finds nothing", Sections.Group(secs, 4) == null);
 
+        Slot S(string key, int h) => new(key, (IntPtr)h);
+        Check("columns: ↓ moves down the column", Sections.MoveInColumn(secs, S("recent", 2), 1) == S("recent", 3));
+        Check("columns: ↓ at the foot of a column stays", Sections.MoveInColumn(secs, S("recent", 4), 1) == S("recent", 4));
+        Check("columns: ↑ at the top of a column stays", Sections.MoveInColumn(secs, S("recent", 2), -1) == S("recent", 2));
+        Check("columns: → keeps the row", Sections.MoveAcrossColumns(secs, S("recent", 3), 1) == S("agents", 4));
+        Check("columns: → into a shorter column lands on its last card", Sections.MoveAcrossColumns(secs, S("agents", 4), 1) == S("term", 5));
+        Check("columns: ← from the first column wraps to the last", Sections.MoveAcrossColumns(secs, S("recent", 4), -1) == S("docs", 3));
+        Check("columns: → from the last column wraps to the first, same row", Sections.MoveAcrossColumns(secs, S("docs", 3), 1) == S("recent", 2));
+        Check("columns: an arrow with nothing selected picks the first card", Sections.MoveAcrossColumns(secs, null, 1) == flat[0] && Sections.MoveInColumn(secs, null, 1) == flat[0]);
+
         var f = Sections.Build(mru, r.Groups, "power");
         Check("a filter hides Recent and matches the title", f.Count == 1 && f[0].Key == "term");
         Check("a filter matches the group name", Sections.Build(mru, r.Groups, "files").Select(s => s.Key).SequenceEqual(new[] { "files" }));
@@ -191,5 +202,47 @@ static class UnitChecks
         var desktop = mru.Select(i => i with { IsCurrent = false }).ToList();
         Check("with the desktop in front, Recent starts at the most recent window",
             Sections.Build(desktop, r.Groups, "")[0].Items.Select(i => (int)i.W.Hwnd).SequenceEqual(new[] { 1, 2, 3 }));
+    }
+
+    /// <summary>The overlay's fitting, at this PC's size: 1536×864 at 125% leaves about 1385 × 646 DIPs for cards.</summary>
+    static void LayoutLogic()
+    {
+        var r = Rules.Parse(Rules.Default);
+        int n = 0;
+        Section Sec(string key, int count) => new(key, key, null, "", Enumerable.Range(0, count).Select(_ =>
+        {
+            var w = new WinInfo((IntPtr)(++n), "w", "a.exe", "a.exe", null, null, false);
+            return new Item(w, r.Place(w.Hwnd, F("w", "a.exe")), false);
+        }).ToList());
+        const double W = 1385, H = 646;
+
+        static bool Inside(Layouts.Result L, double w, double h) => L.width <= w && L.height <= h
+            && L.cards.All(c => c.X >= 0 && c.Y >= 0 && c.X + L.cw <= L.width + 0.01 && c.Y + Layouts.CardH(L.thumbH) <= L.height + 0.01);
+        static bool Apart(Layouts.Result L)
+        {
+            double ch = Layouts.CardH(L.thumbH);
+            var cs = L.cards;
+            for (int i = 0; i < cs.Count; i++)
+                for (int j = i + 1; j < cs.Count; j++)
+                    if (cs[i].X < cs[j].X + L.cw && cs[j].X < cs[i].X + L.cw && cs[i].Y < cs[j].Y + ch && cs[j].Y < cs[i].Y + ch) return false;
+            return true;
+        }
+
+        var eight = Enumerable.Range(0, 8).Select(i => Sec("s" + i, 1)).ToList();
+        var c8 = Layouts.Columns(eight, W, H);
+        Check("columns: eight groups of one fit side by side", Inside(c8, W, H) && Apart(c8) && c8.cards.Select(c => c.X).Distinct().Count() == 8,
+            $"cw {c8.cw}, {c8.width}x{c8.height}");
+        Check("columns: each header spans its column", c8.heads.All(h => h.W == c8.cw));
+
+        var tall = new List<Section> { Sec("long", 12) }.Concat(Enumerable.Range(0, 7).Select(i => Sec("t" + i, 1))).ToList();
+        var ct = Layouts.Columns(tall, W, H);
+        int subs = ct.cards.Where(c => c.Slot.Section == "long").Select(c => c.X).Distinct().Count();
+        Check("columns: a group too long for the screen continues in a column beside it", Inside(ct, W, H) && Apart(ct) && subs >= 2,
+            $"cw {ct.cw}, {subs} columns, {ct.width}x{ct.height}");
+        Check("columns: that group's header spans both, and the next group starts after them",
+            ct.heads[0].W == subs * ct.cw + (subs - 1) * Layouts.CardGap && ct.heads[1].X == ct.heads[0].X + ct.heads[0].W + Layouts.SecGapX);
+
+        var grid = Layouts.Grid(tall, W, H);
+        Check("grid: the same windows fit", Inside(grid, W, H) && Apart(grid), $"cw {grid.cw}, {grid.width}x{grid.height}");
     }
 }

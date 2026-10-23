@@ -158,12 +158,13 @@ static class App
         _ctl = new ControlWindow(test);
         _ctl.QuitRequested += () => Quit("quit_message");
         _ctl.DropHookRequested += () => hook.DropForTest();
+        _ctl.LayoutRequested += columns => { settings.Layout = columns ? Settings.ColumnsLayout : Settings.GridLayout; Log.Write("layout", new { layout = settings.Layout }); };
         _watchdog = new HookWatchdog(_hook, _ctl, _app.Dispatcher);
         _watchdog.Start();
 
         // Draw real cards with real thumbnails once off-screen, so the first Alt+Tab isn't the slow one.
         // Ready only once that frame is drawn and hidden: a session before then would race the warm-up.
-        ov.Prewarm(ctl.Preview(), () =>
+        ov.Prewarm(ctl.Preview(), settings.Columns, () =>
         {
             Log.Write("ready", new
             {

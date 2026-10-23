@@ -68,6 +68,7 @@ static partial class SelfTest
             Phase("T1_quick_tap", T1);
             Phase("T2_hold_cycle", T2);
             Phase("T3_group_keys", T3);
+            Phase("T13_columns", T13); // beside T3: the same keys in the other layout
             Phase("T4_filter_minimized", T4);
             Phase("T5_esc", T5);
             Phase("T6_same_group", T6);
@@ -203,6 +204,80 @@ static partial class SelfTest
             }, section: t.sec, index: flat.IndexOf(t),
             logCheck: what == "3_empty_web" ? (ev, row) => (row["flash"] = Str(ev.LastOrDefault(e => Ev(e) == "flash"), "text")) is string s && s.StartsWith("Group 3") : null);
         }
+    }
+
+    /// <summary>
+    /// The columns layout: the same sections and Tab order as the grid, with Down and Up moving within a
+    /// column (stopping at its ends) and Right and Left moving across columns at the same row (wrapping).
+    /// </summary>
+    static void T13()
+    {
+        SetLayout(columns: true);
+        try
+        {
+            Reset("charlie", "alpha", "bravo", "delta", "echo", "foxtrot");
+            var steps = new (string what, ushort[] keys)[]
+            {
+                ("tab", new[] { N.VK_TAB }),
+                ("down", new[] { N.VK_DOWN }),
+                ("up_at_top_stays", new[] { N.VK_UP }),
+                ("down_x4_stops_at_foot", new[] { N.VK_DOWN, N.VK_DOWN, N.VK_DOWN, N.VK_DOWN }),
+                ("right", new[] { N.VK_RIGHT }),
+                ("left_wraps_to_last", new[] { N.VK_LEFT }),
+                ("down_right_keeps_row", new[] { N.VK_DOWN, N.VK_RIGHT }),
+                ("right_down_left", new[] { N.VK_RIGHT, N.VK_DOWN, N.VK_LEFT }),
+            };
+            for (int i = 0; i < steps.Length; i++)
+            {
+                var (what, keys) = steps[i];
+                var flat = ExpectedFlat();
+                var t = ColumnMoves(flat, keys);
+                string view = ViewString(flat);
+                Switch("T13", i, t.h, _ =>
+                {
+                    Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(220);
+                    foreach (var k in keys) { Tap(k); Pause(60); }
+                    Pause(40);
+                    Up(N.VK_LMENU);
+                    return new() { ["what"] = what };
+                }, section: t.sec, index: flat.IndexOf(t), logCheck: (ev, row) =>
+                {
+                    var v = ev.LastOrDefault(e => Ev(e) == "view");
+                    row["view"] = ViewOf(v);
+                    row["layout"] = Str(v, "layout");
+                    return (string?)row["view"] == view && (string?)row["layout"] == "columns";
+                });
+            }
+        }
+        finally { SetLayout(columns: false); }
+    }
+
+    /// <summary>The driver's own model of the columns layout's keys, from the first card, where Alt+Tab opens.</summary>
+    static (string sec, IntPtr h) ColumnMoves(List<(string sec, IntPtr h)> flat, ushort[] keys)
+    {
+        var cols = flat.GroupBy(x => x.sec).Select(g => g.ToList()).ToList();
+        int c = 0, r = 0;
+        foreach (var k in keys)
+        {
+            if (k == N.VK_TAB)
+            {
+                var next = flat[(flat.IndexOf(cols[c][r]) + 1) % flat.Count];
+                c = cols.FindIndex(col => col.Contains(next));
+                r = cols[c].IndexOf(next);
+            }
+            else if (k is N.VK_DOWN or N.VK_UP) r = Math.Clamp(r + (k == N.VK_DOWN ? 1 : -1), 0, cols[c].Count - 1);
+            else { c = (c + (k == N.VK_RIGHT ? 1 : -1) + cols.Count) % cols.Count; r = Math.Min(r, cols[c].Count - 1); }
+        }
+        return cols[c][r];
+    }
+
+    /// <summary>Switch Altlane's layout through its test-only control message. Not saved to settings.json.</summary>
+    static void SetLayout(bool columns)
+    {
+        IntPtr ctl = N.FindWindowEx(N.HWND_MESSAGE, IntPtr.Zero, null, ControlTitle);
+        N.PostMessage(ctl, (int)N.RegisterWindowMessage("Altlane.Test.Layout"), (IntPtr)(columns ? 1 : 0), IntPtr.Zero);
+        Pause(150);
+        Log.Write("layout_set", new { columns, ctl = ctl.ToInt64() });
     }
 
     /// <summary>Type to filter onto a minimized window: letters pin the view after Alt is released; Enter commits.</summary>

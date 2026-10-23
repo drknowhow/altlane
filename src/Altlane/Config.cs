@@ -27,6 +27,11 @@ sealed class Settings
     public bool SameGroupKey { get; set; } = true;
     /// <summary>Alt+1..9 jumps straight to the most recent window in that group. Off by default: apps use Alt+number too.</summary>
     public bool DirectJump { get; set; }
+    /// <summary>Alt+Tab's view: "grid" (sections that wrap into rows) or "columns" (one column per section).</summary>
+    public string Layout { get; set; } = GridLayout;
+
+    public const string GridLayout = "grid", ColumnsLayout = "columns";
+    [System.Text.Json.Serialization.JsonIgnore] public bool Columns => string.Equals(Layout, ColumnsLayout, StringComparison.OrdinalIgnoreCase);
 
     static readonly JsonSerializerOptions Opts = new() { WriteIndented = true, ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 

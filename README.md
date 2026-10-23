@@ -10,12 +10,17 @@ Agents, Terminals, Web, Creative, Files, Docs & notes, Other. Your hand learns t
 and the browser is 3. A quick Alt+Tab still flips straight back to your last window without drawing
 anything.
 
-Version 0.1.1 replaces Alt+Tab only. Win+Tab still opens Windows' Task View; a full-screen view with
+Alt+Tab comes in two layouts, picked in Settings: a grid, where the groups wrap into rows (above), or
+columns, one per group side by side (below). Both show the same windows in the same order.
+
+![The columns layout: Recent, then one column per group](docs/alt-tab-columns.png)
+
+Version 0.2.0 replaces Alt+Tab only. Win+Tab still opens Windows' Task View; a full-screen view with
 one column per group is planned for it.
 
 ## Install
 
-Download `Altlane-Setup-0.1.1.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
+Download `Altlane-Setup-0.2.0.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
 run it. It installs for your user only, so there is no admin prompt, and offers to start Altlane when
 you sign in. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 (x64) and offers the download page if that's missing.
@@ -32,8 +37,10 @@ from anywhere.
 |---|---|
 | Alt+Tab, quick tap | Straight back to the previous window; nothing is drawn |
 | Alt+Tab, held | Recent (the 3 windows after the current one), then groups 1–7 |
-| Tab / Shift+Tab, ← → | Next / previous window |
-| `, ↓ / Shift+`, ↑ | First window of the next / previous section (` is the key above Tab) |
+| Tab / Shift+Tab | Next / previous window |
+| ` / Shift+` | First window of the next / previous section (` is the key above Tab) |
+| Arrows, grid | ← → next / previous window; ↓ ↑ next / previous section |
+| Arrows, columns | ↓ ↑ up and down the column; ← → the next / previous column, at the same row |
 | 1–9 (Alt held) | First window of that group |
 | Letters, Space | Filter by title, app or group name; the view stays open after Alt is released, Enter switches |
 | Esc | Clears the filter, or closes the view |

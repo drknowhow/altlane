@@ -6,7 +6,8 @@ light app theme, non-elevated.
 ## What phase 1 is
 
 Altlane 0.1.0: Alt+Tab in layout A, a tray app, a rules file, and a per-user installer. Win+Tab is
-not touched: it still opens Windows' Task View. The lanes overview (layout C) is phase 2.
+not touched: it still opens Windows' Task View. The lanes overview (layout C) for Win+Tab is phase 2;
+0.2.0 later added its columns to Alt+Tab as a setting (see "0.2.0: columns in Alt+Tab").
 
 | Keys | What happens |
 |---|---|
@@ -137,6 +138,34 @@ fixed in 0.1.1:
 
 Version 0.1.1 is also the first under the name Altlane; phase 1 ran as Altitude.
 
+## 0.2.0: columns in Alt+Tab
+
+Settings, Switching, "Alt+Tab layout" picks the grid above or columns: Recent, then one column per
+group, side by side, as in the design's layout C. Both layouts show the same sections in the same
+order, so Tab, `, the number keys, the filter and Ctrl+number behave the same. Only the arrows differ:
+
+| Arrows | Grid | Columns |
+|---|---|---|
+| ↓ ↑ | First card of the next / previous section | Down / up the column, stopping at its ends |
+| ← → | Next / previous card | Next / previous column at the same row (its last card when it is shorter), wrapping |
+
+A group with more windows than fit down the screen continues in a second column beside it, and the
+cards shrink until every column fits the screen's width.
+
+How it was tested:
+
+- **Unit checks:** 72 of 72. The 13 new ones cover the column arrows, and the fitting with eight
+  columns and with a 12-window group that has to continue beside itself.
+- **Self-test:** a new phase, T13, switches the running Altlane to columns through a test-only message
+  and runs eight steps: Tab, ↓, ↑ at the top, ↓ four times past the foot, →, ← wrapping to the last
+  column, ↓ then →, and → ↓ ←. Each step checks the window that lands, the card Altlane reports, and
+  that the logged view is the expected one in the columns layout. 8 of 8, and the whole run was GO:
+  53 of 53 switches, p50 2.5 ms, p95 7.5 ms; overlay p50 22 ms, p95 32 ms over 60 shows.
+- **Not tested:** a group long enough to need a second column on a real screen (only the unit checks
+  cover it), and the columns layout in real use.
+
+![Alt+Tab, columns](alt-tab-columns.png)
+
 ## What phase 1 did not prove
 
 - **Real keyboard.** Every self-test key was injected. Real use covered only the 9 minutes above.
@@ -153,14 +182,16 @@ Version 0.1.1 is also the first under the name Altlane; phase 1 ran as Altitude.
 
 ## Manual check
 
-1. Run `dist\Altlane-Setup-0.1.1.exe`. Leave "Start Altlane when I sign in" ticked. No admin
+1. Run `dist\Altlane-Setup-0.2.0.exe`. Leave "Start Altlane when I sign in" ticked. No admin
    prompt should appear. Altlane starts in the tray.
 2. Use Alt+Tab on your real windows: a quick tap, holding and Tab, a number key, typing a few letters
    then Enter, Esc. Check that each window sits in the group you'd expect; the footer says why.
-3. Hold Alt+Tab on a window in the wrong group and press Ctrl plus the right number. Check
+3. Settings → Alt+Tab layout → Columns. Hold Alt+Tab and try ↓ ↑ and ← →; then switch back if you
+   prefer the grid.
+4. Hold Alt+Tab on a window in the wrong group and press Ctrl plus the right number. Check
    `rules.json` (tray → Open rules) for the new line.
-4. Click into an admin window (an admin PowerShell) and press Alt+Tab. Expected: Windows' own switcher.
-5. Optional: Settings → "Turn on admin mode…", accept the prompt, and repeat step 4. Expected:
+5. Click into an admin window (an admin PowerShell) and press Alt+Tab. Expected: Windows' own switcher.
+6. Optional: Settings → "Turn on admin mode…", accept the prompt, and repeat step 5. Expected:
    Altlane.
-6. Sign out and back in. Altlane should be in the tray (from the Run key, or from the task in admin
+7. Sign out and back in. Altlane should be in the tray (from the Run key, or from the task in admin
    mode).

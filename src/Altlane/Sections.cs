@@ -14,7 +14,8 @@ sealed record Section(string Key, string Label, int? Num, string Color, List<Ite
 readonly record struct Slot(string Section, IntPtr Hwnd);
 
 /// <summary>
-/// Layout A's sections, from windows in MRU order. Pure, so the self-test's unit mode can check it.
+/// Alt+Tab's sections, from windows in MRU order, and how the keys move between them. The grid and the
+/// columns layouts show the same sections. Pure, so the self-test's unit mode can check it.
 /// </summary>
 static class Sections
 {
@@ -69,6 +70,39 @@ static class Sections
         int k = sel is Slot s ? secs.FindIndex(x => x.Key == s.Section) : -1;
         k = k < 0 ? (d > 0 ? 0 : secs.Count - 1) : ((k + d) % secs.Count + secs.Count) % secs.Count;
         return new Slot(secs[k].Key, secs[k].Items[0].W.Hwnd);
+    }
+
+    /// <summary>Columns layout, ↑ ↓: the card above or below in the same column, stopping at its ends.</summary>
+    public static Slot? MoveInColumn(List<Section> secs, Slot? sel, int d)
+    {
+        if (secs.Count == 0) return null;
+        var (k, j) = Locate(secs, sel);
+        if (k < 0) return new Slot(secs[0].Key, secs[0].Items[0].W.Hwnd);
+        var items = secs[k].Items;
+        return new Slot(secs[k].Key, items[Math.Clamp(j + d, 0, items.Count - 1)].W.Hwnd);
+    }
+
+    /// <summary>
+    /// Columns layout, ← →: the same row in the next (or previous) column, wrapping; the column's last
+    /// card when it is shorter.
+    /// </summary>
+    public static Slot? MoveAcrossColumns(List<Section> secs, Slot? sel, int d)
+    {
+        if (secs.Count == 0) return null;
+        var (k, j) = Locate(secs, sel);
+        if (k < 0) (k, j) = (d > 0 ? 0 : secs.Count - 1, 0);
+        else k = ((k + d) % secs.Count + secs.Count) % secs.Count;
+        var items = secs[k].Items;
+        return new Slot(secs[k].Key, items[Math.Min(j, items.Count - 1)].W.Hwnd);
+    }
+
+    /// <summary>Section and row of a card, or (-1, -1) when it isn't in view.</summary>
+    static (int k, int j) Locate(List<Section> secs, Slot? sel)
+    {
+        if (sel is not Slot s) return (-1, -1);
+        int k = secs.FindIndex(x => x.Key == s.Section);
+        int j = k < 0 ? -1 : secs[k].Items.FindIndex(it => it.W.Hwnd == s.Hwnd);
+        return j < 0 ? (-1, -1) : (k, j);
     }
 
     /// <summary>First card of group n, or null when the group has no windows in view.</summary>

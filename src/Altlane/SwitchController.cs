@@ -23,6 +23,7 @@ sealed class SwitchController
     KeyboardHook? _hook;
 
     bool _active, _shown, _sticky;
+    bool _columns; // the columns layout, fixed for the session: the arrow keys depend on it
     string? _scope; // group key while in an Alt+` session
     List<Item> _items = new();
     List<Section> _secs = new();
@@ -131,7 +132,7 @@ sealed class SwitchController
     {
         if (_active) Cancel("restart");
         _sid++;
-        _active = true; _shown = false; _sticky = false; _filter = ""; _scope = null; _startTs = e.Ts; _activating = IntPtr.Zero;
+        _active = true; _shown = false; _sticky = false; _filter = ""; _scope = null; _columns = _settings.Columns; _startTs = e.Ts; _activating = IntPtr.Zero;
         _startFg = Win.MruKey(N.GetForegroundWindow());
         long t0 = Stopwatch.GetTimestamp();
         _items = Collect(out _hidden, out double snapMs);
@@ -153,7 +154,7 @@ sealed class SwitchController
         _secs = Sections.Build(_items, _rules.Current.Groups, "", _scope);
         var flat = Sections.Flat(_secs);
         _sel = e.Shift && flat.Count > 0 ? flat[^1] : FirstNotCurrent(flat);
-        _shotName = _scope != null ? "same-group" : "alt-tab";
+        _shotName = _scope != null ? "same-group" : MainShot;
 
         Log.Write("session_start", new
         {
@@ -167,6 +168,9 @@ sealed class SwitchController
     /// <summary>The first card that isn't the window already in front: committing that one would go nowhere.</summary>
     Slot? FirstNotCurrent(List<Slot> flat) =>
         flat.Where(s => Sections.ItemAt(_secs, s) is Item it && !it.IsCurrent).Cast<Slot?>().FirstOrDefault() ?? flat.Cast<Slot?>().FirstOrDefault();
+
+    /// <summary>The self-test's screenshot of the full view, one per layout.</summary>
+    string MainShot => _columns ? "columns" : "alt-tab";
 
     string Hints()
     {
@@ -185,12 +189,12 @@ sealed class SwitchController
     void Show()
     {
         if (!_active) return;
-        _ov.ShowSections(_secs, _sel, _filter, _scope == null ? _hidden : 0, Why(_sel), Hints());
+        _ov.ShowSections(_secs, _sel, _filter, _scope == null ? _hidden : 0, Why(_sel), Hints(), _columns);
         _shown = true;
         if (_test)
             Log.Write("view", new
             {
-                sid = _sid, filter = _filter, scope = _scope,
+                sid = _sid, filter = _filter, scope = _scope, layout = _columns ? Settings.ColumnsLayout : Settings.GridLayout,
                 sections = _secs.Select(s => new { key = s.Key, hwnds = s.Items.Select(i => i.W.Hwnd.ToInt64()).ToArray() }).ToArray(),
                 sel = _sel?.Hwnd.ToInt64(), sel_section = _sel?.Section,
             });
@@ -209,7 +213,7 @@ sealed class SwitchController
         ushort vk = e.Vk;
         if (vk == N.VK_TAB)
         {
-            if (_scope != null) { _scope = null; _shotName = "alt-tab"; Rebuild(keepHwnd: true); return; }
+            if (_scope != null) { _scope = null; _shotName = MainShot; Rebuild(keepHwnd: true); return; }
             Select(Sections.Move(_secs, _sel, e.Shift ? -1 : 1));
         }
         else if (e.Grave)
@@ -217,8 +221,17 @@ sealed class SwitchController
             if (_scope != null) Select(Sections.Move(_secs, _sel, e.Shift ? -1 : 1));
             else Select(Sections.JumpSection(_secs, _sel, e.Shift ? -1 : 1));
         }
-        else if (vk is N.VK_RIGHT or N.VK_LEFT) Select(Sections.Move(_secs, _sel, vk == N.VK_RIGHT ? 1 : -1));
-        else if (vk is N.VK_DOWN or N.VK_UP) Select(Sections.JumpSection(_secs, _sel, vk == N.VK_DOWN ? 1 : -1));
+        // Grid: ← → step through the cards, ↓ ↑ through the sections. Columns: ↓ ↑ within a column, ← → across.
+        else if (vk is N.VK_RIGHT or N.VK_LEFT)
+        {
+            int d = vk == N.VK_RIGHT ? 1 : -1;
+            Select(_columns ? Sections.MoveAcrossColumns(_secs, _sel, d) : Sections.Move(_secs, _sel, d));
+        }
+        else if (vk is N.VK_DOWN or N.VK_UP)
+        {
+            int d = vk == N.VK_DOWN ? 1 : -1;
+            Select(_columns ? Sections.MoveInColumn(_secs, _sel, d) : Sections.JumpSection(_secs, _sel, d));
+        }
         else if (vk is >= '1' and <= '9')
         {
             int num = vk - '0';
