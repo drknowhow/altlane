@@ -5,9 +5,10 @@ light app theme, non-elevated.
 
 ## What phase 1 is
 
-Altlane 0.1.0: Alt+Tab in layout A, a tray app, a rules file, and a per-user installer. Win+Tab is
-not touched: it still opens Windows' Task View. The lanes overview (layout C) for Win+Tab is phase 2;
-0.2.0 later added its columns to Alt+Tab as a setting (see "0.2.0: columns in Alt+Tab").
+Altlane 0.1.0: Alt+Tab in layout A, a tray app, a rules file, and a per-user installer. Win+Tab was
+not touched in phase 1: it still opened Windows' Task View. 0.2.0 later added layout C's columns to
+Alt+Tab as a setting (see "0.2.0: columns in Alt+Tab"), and 0.3.0 gave Win+Tab the lanes overview
+(see [phase2.md](phase2.md)).
 
 | Keys | What happens |
 |---|---|

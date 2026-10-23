@@ -5,8 +5,8 @@ using System.Linq;
 namespace Altlane;
 
 /// <summary>
-/// Where the overlay puts each header and card, in DIPs, for the grid (layout A) and the columns layout
-/// (layout C). Pure, so the self-test's unit mode can check the fitting.
+/// Where the overlay puts each header and card, in DIPs, for the grid (layout A), the columns layout
+/// (layout C) and Win+Tab's lanes overview. Pure, so the self-test's unit mode can check the fitting.
 /// </summary>
 static class Layouts
 {
@@ -82,10 +82,11 @@ static class Layouts
     /// still go by position in the section, so the down arrow at the foot of a column moves to the top
     /// of its next one.
     /// </summary>
-    public static Result Columns(List<Section> secs, double maxW, double maxH)
+    /// <param name="gapX">Space between columns; the lanes overview leaves room for its lane boxes.</param>
+    public static Result Columns(List<Section> secs, double maxW, double maxH, double gapX = SecGapX)
     {
         int n = Math.Max(1, secs.Count);
-        double start = Math.Max(MinCard, Math.Min(MaxCard, Math.Floor((maxW - (n - 1) * SecGapX) / n)));
+        double start = Math.Max(MinCard, Math.Min(MaxCard, Math.Floor((maxW - (n - 1) * gapX) / n)));
         for (double cw = start; ; cw -= 8)
         {
             double thumbH = Math.Round(cw * 10 / 16);
@@ -96,7 +97,7 @@ static class Layouts
                 int subs = (s.Items.Count + fit - 1) / fit;
                 return subs * cw + (subs - 1) * CardGap;
             }).ToList();
-            double width = widths.Sum() + Math.Max(0, secs.Count - 1) * SecGapX;
+            double width = widths.Sum() + Math.Max(0, secs.Count - 1) * gapX;
             if (width > maxW && cw - 8 >= MinCard) continue;
 
             var cards = new List<CardPos>();
@@ -111,9 +112,30 @@ static class Layouts
                         x + j / fit * (cw + CardGap), HeadH + HeadGap + j % fit * (cardH + CardGap)));
                 int rows = Math.Min(s.Items.Count, fit);
                 height = Math.Max(height, HeadH + HeadGap + rows * cardH + (rows - 1) * CardGap);
-                x += widths[i] + SecGapX;
+                x += widths[i] + gapX;
             }
             return new Result(width, height, cw, thumbH, cards, heads);
         }
+    }
+
+    public const double LanesSide = 24, LanesTop = 84, LanePad = 8, LaneGapX = 28, LanesFootH = 46;
+    public const double SearchTop = 20, SearchW = 460, SearchH = 36;
+
+    /// <param name="X">Left edge of the columns, centered in the work area.</param>
+    /// <param name="Y">Top of the columns, below the search box.</param>
+    /// <param name="LaneH">Height of every lane: the columns' room down to the footer.</param>
+    /// <param name="FootY">Top of the footer's two lines.</param>
+    public sealed record Overview(Result L, double X, double Y, double LaneH, double FootY);
+
+    /// <summary>
+    /// Win+Tab's overview fills the work area: the search box on top, one full-height lane per section
+    /// laid out by Columns, and the footer at the bottom. A lane's box is its column grown by LanePad.
+    /// </summary>
+    public static Overview Lanes(List<Section> secs, double workW, double workH)
+    {
+        double footY = workH - LanesFootH - 10;
+        double laneH = footY - 14 - LanePad - LanesTop;
+        var L = Columns(secs, workW - 2 * LanesSide - 2 * LanePad, laneH, LaneGapX);
+        return new Overview(L, Math.Round((workW - L.width) / 2), LanesTop, laneH, footY);
     }
 }

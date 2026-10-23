@@ -11,6 +11,8 @@ namespace Altlane;
 /// The switching state machine, on the UI thread. Alt+Tab: a quick tap switches to the previous
 /// window without drawing anything; holding past the show delay draws layout A. Alt+` does the same
 /// inside the current window's group. Typing filters and pins the view open until Enter or Esc.
+/// Win+Tab opens the lanes overview at once and keeps it open, without Alt held, until Enter, a click
+/// or Esc; there every window appears once, in its group, and the keys work as in the columns layout.
 /// </summary>
 sealed class SwitchController
 {
@@ -24,6 +26,7 @@ sealed class SwitchController
 
     bool _active, _shown, _sticky;
     bool _columns; // the columns layout, fixed for the session: the arrow keys depend on it
+    bool _overview; // Win+Tab's lanes overview rather than Alt+Tab
     string? _scope; // group key while in an Alt+` session
     List<Item> _items = new();
     List<Section> _secs = new();
@@ -44,11 +47,18 @@ sealed class SwitchController
         _showTimer = new DispatcherTimer(DispatcherPriority.Send);
         _showTimer.Tick += (_, _) => { _showTimer.Stop(); if (_active && !_shown) Show(); };
         _ov.CardClicked += slot => { if (_active) { _sel = slot; Commit("click"); } };
+        _ov.CardHovered += slot =>
+        {
+            if (!_active || !_overview || _sel == slot) return;
+            Select(slot);
+            if (_test) Log.Write("hover", new { sid = _sid, sel = slot.Hwnd.ToInt64(), sel_section = slot.Section });
+        };
+        _ov.BackgroundClicked += () => { if (_active && _overview) Cancel("click_outside"); };
         _ov.Composed += ms =>
         {
             Log.Write("overlay_composed", new
             {
-                sid = _sid, show_ms = Math.Round(ms, 2),
+                sid = _sid, lanes = _overview, show_ms = Math.Round(ms, 2),
                 from_key_ms = Math.Round(Clock.Between(_startTs, Stopwatch.GetTimestamp()), 2),
                 cards = _secs.Sum(s => s.Items.Count),
             });
@@ -74,12 +84,16 @@ sealed class SwitchController
 
     public void OnHook(HookEvent e)
     {
+        _hook?.Ack(e.Ts);
         double lag = Clock.Between(e.Ts, Stopwatch.GetTimestamp());
         if (lag > 30) Log.Write("dispatch_lag", new { kind = e.Kind.ToString(), ms = Math.Round(lag, 2) });
         switch (e.Kind)
         {
             case HookKind.AltStart: Start(e); break;
             case HookKind.AltRelease: if (_active && !_sticky) Commit("alt_up"); break;
+            case HookKind.WinStart: StartOverview(e); break;
+            case HookKind.WinToggle: Cancel("win_tab"); break;
+            case HookKind.ShiftWinTab: Log.Write("task_view", new { sid = _sid, was_open = _active }); Cancel("shift_win_tab"); break;
             case HookKind.Key: OnKey(e); break;
             case HookKind.Direct: Direct(e); break;
             case HookKind.Expired: Cancel("hook_session_limit"); break;
@@ -118,13 +132,16 @@ sealed class SwitchController
     {
         IntPtr keep = Sections.ItemAt(_secs, _sel)?.W.Hwnd ?? IntPtr.Zero;
         string? keepSec = _sel?.Section;
-        _secs = Sections.Build(_items, _rules.Current.Groups, _filter, _scope);
+        _secs = Build();
         var flat = Sections.Flat(_secs);
         if (keepHwnd && keep != IntPtr.Zero)
             _sel = flat.Where(s => s.Hwnd == keep).OrderBy(s => s.Section == keepSec ? 0 : 1).Cast<Slot?>().FirstOrDefault() ?? FirstNotCurrent(flat);
-        else _sel = FirstNotCurrent(flat);
+        else _sel = _overview && _filter.Length == 0 ? Previous(flat) : FirstNotCurrent(flat);
         if (_shown) Show();
     }
+
+    /// <summary>The overview has no Recent row: each window appears once, in its group.</summary>
+    List<Section> Build() => Sections.Build(_items, _rules.Current.Groups, _filter, _scope, recent: !_overview);
 
     // ---------- session ----------
 
@@ -132,7 +149,7 @@ sealed class SwitchController
     {
         if (_active) Cancel("restart");
         _sid++;
-        _active = true; _shown = false; _sticky = false; _filter = ""; _scope = null; _columns = _settings.Columns; _startTs = e.Ts; _activating = IntPtr.Zero;
+        _active = true; _shown = false; _sticky = false; _overview = false; _filter = ""; _scope = null; _columns = _settings.Columns; _startTs = e.Ts; _activating = IntPtr.Zero;
         _startFg = Win.MruKey(N.GetForegroundWindow());
         long t0 = Stopwatch.GetTimestamp();
         _items = Collect(out _hidden, out double snapMs);
@@ -151,7 +168,7 @@ sealed class SwitchController
             }
         }
 
-        _secs = Sections.Build(_items, _rules.Current.Groups, "", _scope);
+        _secs = Build();
         var flat = Sections.Flat(_secs);
         _sel = e.Shift && flat.Count > 0 ? flat[^1] : FirstNotCurrent(flat);
         _shotName = _scope != null ? "same-group" : MainShot;
@@ -165,16 +182,47 @@ sealed class SwitchController
         _showTimer.Start();
     }
 
+    /// <summary>Win+Tab: the lanes overview, drawn at once, open until Enter, a click, Esc or Win+Tab again.</summary>
+    void StartOverview(HookEvent e)
+    {
+        if (_active) Cancel("restart");
+        _sid++;
+        _active = true; _shown = false; _sticky = true; _overview = true; _columns = true; _filter = ""; _scope = null; _startTs = e.Ts; _activating = IntPtr.Zero;
+        _startFg = Win.MruKey(N.GetForegroundWindow());
+        long t0 = Stopwatch.GetTimestamp();
+        _items = Collect(out _hidden, out double snapMs);
+        _secs = Build();
+        _sel = Previous(Sections.Flat(_secs));
+        _shotName = MainShot;
+        Log.Write("session_start", new
+        {
+            sid = _sid, kind = "overview", n = _items.Count, hidden = _hidden,
+            snapshot_ms = Math.Round(snapMs, 2), build_ms = Math.Round(Clock.Between(t0, Stopwatch.GetTimestamp()), 2),
+        });
+        Show();
+    }
+
+    /// <summary>The card of the most recent window that isn't in front, so Enter right away goes back to it.</summary>
+    Slot? Previous(List<Slot> flat)
+    {
+        var prev = _items.FirstOrDefault(i => !i.IsCurrent);
+        return (prev == null ? null : flat.Where(s => s.Hwnd == prev.W.Hwnd).Cast<Slot?>().FirstOrDefault()) ?? FirstNotCurrent(flat);
+    }
+
     /// <summary>The first card that isn't the window already in front: committing that one would go nowhere.</summary>
     Slot? FirstNotCurrent(List<Slot> flat) =>
         flat.Where(s => Sections.ItemAt(_secs, s) is Item it && !it.IsCurrent).Cast<Slot?>().FirstOrDefault() ?? flat.Cast<Slot?>().FirstOrDefault();
 
     /// <summary>The self-test's screenshot of the full view, one per layout.</summary>
-    string MainShot => _columns ? "columns" : "alt-tab";
+    string MainShot => _overview ? "lanes" : _columns ? "columns" : "alt-tab";
+
+    ViewKind View => _overview ? ViewKind.Lanes : _columns ? ViewKind.Columns : ViewKind.Grid;
 
     string Hints()
     {
         int n = _rules.Current.Groups.Count;
+        if (_overview)
+            return $"Tab  next     `  next group     1–{n}  jump to group     ↑ ↓ ← →  move     type to search     Ctrl+1–{n}  move to group     Del  close window     Enter  switch     Esc  close     Shift+Win+Tab  Task View";
         return _scope != null
             ? "`  next in this group     Tab  all windows     Esc  cancel"
             : $"Tab  next     `  next group     1–{n}  jump to group     type to filter     Ctrl+1–{n}  move to group     Del  close     Esc  cancel";
@@ -189,14 +237,16 @@ sealed class SwitchController
     void Show()
     {
         if (!_active) return;
-        _ov.ShowSections(_secs, _sel, _filter, _scope == null ? _hidden : 0, Why(_sel), Hints(), _columns);
+        _ov.ShowSections(_secs, _sel, _filter, _scope == null ? _hidden : 0, Why(_sel), Hints(), View);
         _shown = true;
         if (_test)
             Log.Write("view", new
             {
-                sid = _sid, filter = _filter, scope = _scope, layout = _columns ? Settings.ColumnsLayout : Settings.GridLayout,
+                sid = _sid, filter = _filter, scope = _scope, layout = _overview ? "lanes" : _columns ? Settings.ColumnsLayout : Settings.GridLayout,
                 sections = _secs.Select(s => new { key = s.Key, hwnds = s.Items.Select(i => i.W.Hwnd.ToInt64()).ToArray() }).ToArray(),
                 sel = _sel?.Hwnd.ToInt64(), sel_section = _sel?.Section,
+                // Where each card is on screen, so the self-test can point the mouse at one.
+                cards = _overview ? _ov.CardRects() : null,
             });
     }
 
@@ -260,7 +310,7 @@ sealed class SwitchController
             _scope = null;
             _filter += vk == N.VK_SPACE ? ' ' : char.ToLowerInvariant((char)vk);
             _showTimer.Stop();
-            _shotName = "filter";
+            _shotName = _overview ? "lanes-filter" : "filter";
             _shown = true; // a filter always shows the view
             Rebuild(keepHwnd: false);
         }
@@ -321,7 +371,7 @@ sealed class SwitchController
         N.PostMessage(it.W.Hwnd, N.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         Log.Write("close_window", new { sid = _sid, exe = it.W.Exe, title = _test ? it.W.Title : null });
         _items = _items.Where(i => i.W.Hwnd != it.W.Hwnd).ToList();
-        _secs = Sections.Build(_items, _rules.Current.Groups, _filter, _scope);
+        _secs = Build();
         flat = Sections.Flat(_secs);
         _sel = flat.Count == 0 ? null : flat[Math.Clamp(idx, 0, flat.Count - 1)];
         if (_shown) Show();
@@ -344,7 +394,7 @@ sealed class SwitchController
         if (!_active) return;
         var it = Sections.ItemAt(_secs, _sel);
         if (it == null) { Cancel("nothing_to_commit"); return; }
-        bool quick = !_shown;
+        bool quick = !_shown, overview = _overview;
         int index = Sections.IndexOf(Sections.Flat(_secs), _sel);
         string section = _sel!.Value.Section;
         _activating = it.W.Hwnd;
@@ -352,7 +402,7 @@ sealed class SwitchController
         var r = Activator.Activate(it.W.Hwnd, KeyboardHook.Magic, altReleased: how == "alt_up");
         Log.Write("switch", new
         {
-            sid = _sid, how, quick, index, section, ok = r.Ok, method = r.Method, act_ms = Math.Round(r.Ms, 2), was_min = r.WasMinimized,
+            sid = _sid, how, quick, overview, index, section, ok = r.Ok, method = r.Method, act_ms = Math.Round(r.Ms, 2), was_min = r.WasMinimized,
             exe = it.W.Exe, group = it.P.Group?.Key, hwnd = _test ? it.W.Hwnd.ToInt64() : 0, title = _test ? it.W.Title : null,
             from_key_ms = Math.Round(Clock.Between(_startTs, Stopwatch.GetTimestamp()), 2),
         });
@@ -378,5 +428,6 @@ sealed class SwitchController
         _hook?.EndSession();
         _active = false;
         _shown = false;
+        _overview = false;
     }
 }

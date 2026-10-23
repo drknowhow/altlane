@@ -51,7 +51,7 @@ Name: "startup"; Description: "Start Altlane when I sign in"
 Source: "..\dist\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\Altlane"; Filename: "{app}\Altlane.exe"; Comment: "Alt+Tab, grouped by kind of window"
+Name: "{autoprograms}\Altlane"; Filename: "{app}\Altlane.exe"; Comment: "Alt+Tab and Win+Tab, grouped by kind of window"
 
 [Run]
 Filename: "{app}\Altlane.exe"; Description: "Start Altlane now"; Flags: nowait postinstall skipifsilent

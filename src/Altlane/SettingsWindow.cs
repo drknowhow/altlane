@@ -39,7 +39,7 @@ sealed class SettingsWindow : Window
 
         var root = new StackPanel { Margin = new Thickness(22, 18, 22, 18) };
         root.Children.Add(new TextBlock { Text = "Altlane", FontSize = 24, FontWeight = FontWeights.SemiBold });
-        root.Children.Add(Note($"Version {version}{(AdminTask.SelfElevated ? ", running as administrator" : "")}. Alt+Tab, grouped by kind of window."));
+        root.Children.Add(Note($"Version {version}{(AdminTask.SelfElevated ? ", running as administrator" : "")}. Alt+Tab and Win+Tab, grouped by kind of window."));
 
         root.Children.Add(Head("Switching"));
         var layoutRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
@@ -48,6 +48,12 @@ sealed class SettingsWindow : Window
         layoutRow.Children.Add(Radio("Columns", Settings.ColumnsLayout));
         root.Children.Add(layoutRow);
         root.Children.Add(Note("Grid: the groups wrap into rows, and ← → step through the cards. Columns: one column per group, ↑ ↓ move within it and ← → across. Tab, ` and the number keys work the same in both.", indent: false));
+        var winTabRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0) };
+        winTabRow.Children.Add(new TextBlock { Text = "Win+Tab:", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) });
+        winTabRow.Children.Add(WinTabRadio("Lanes overview", true));
+        winTabRow.Children.Add(WinTabRadio("Windows' Task View", false));
+        root.Children.Add(winTabRow);
+        root.Children.Add(Note("The lanes overview shows every group in its own column, full screen, and stays open until Enter, a click or Esc. With it on, Shift+Win+Tab opens Windows' Task View.", indent: false));
         root.Children.Add(Check("Alt+` cycles the windows in the current window's group", s.SameGroupKey, v => s.SameGroupKey = v));
         root.Children.Add(Check("Alt+1 to Alt+9 jump to the most recent window in that group", s.DirectJump, v => s.DirectJump = v));
         root.Children.Add(Note("Off unless you want it: some apps use Alt+number for their own shortcuts.", indent: true));
@@ -180,6 +186,13 @@ sealed class SettingsWindow : Window
     {
         var r = new RadioButton { Content = text, GroupName = "layout", IsChecked = _s.Layout == layout, Margin = new Thickness(0, 0, 16, 0), VerticalAlignment = VerticalAlignment.Center };
         r.Checked += (_, _) => { if (!_quiet) { _s.Layout = layout; _changed(); } };
+        return r;
+    }
+
+    RadioButton WinTabRadio(string text, bool lanes)
+    {
+        var r = new RadioButton { Content = text, GroupName = "wintab", IsChecked = _s.WinTabLanes == lanes, Margin = new Thickness(0, 0, 16, 0), VerticalAlignment = VerticalAlignment.Center };
+        r.Checked += (_, _) => { if (!_quiet) { _s.WinTabLanes = lanes; _changed(); } };
         return r;
     }
 

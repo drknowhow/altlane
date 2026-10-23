@@ -13,22 +13,27 @@ using static Altlane.Layouts;
 
 namespace Altlane;
 
+/// <summary>Grid and Columns are Alt+Tab's two layouts; Lanes is Win+Tab's full-screen overview.</summary>
+enum ViewKind { Grid, Columns, Lanes }
+
 /// <summary>
 /// Alt+Tab's view: a Recent section, then one section per group, each with cards that hold live DWM
 /// thumbnails. The grid (layout A) wraps the sections into rows; the columns layout (layout C) gives
-/// each section a column. Built in code on a Canvas so every thumbnail rect is known exactly. Never takes activation
+/// each section a column. Win+Tab's lanes overview fills the work area with one lane per group under a
+/// search box. Built in code on a Canvas so every thumbnail rect is known exactly. Never takes activation
 /// (WS_EX_NOACTIVATE); the keyboard hook feeds it keys instead. AllowsTransparency stays false
 /// because DWM thumbnails don't draw into layered windows.
 /// </summary>
 sealed class Overlay : Window
 {
-    sealed record Theme(Brush Pane, Brush Ink, Brush Muted, Brush Edge, Brush CardHi, Brush Accent, Brush ThumbBg, Brush Badge);
+    sealed record Theme(Brush Pane, Brush Ink, Brush Muted, Brush Edge, Brush CardHi, Brush Accent, Brush ThumbBg, Brush Badge, Brush Lane);
 
     static readonly Theme Dark = new(B(0x26, 0x28, 0x2B), B(0xF2, 0xF2, 0xF2), B(0xA6, 0xAF, 0xB8), B(0x3A, 0x3D, 0x41),
-        B(0x34, 0x37, 0x3B), B(0x60, 0xCD, 0xFF), B(0x1C, 0x1E, 0x21), B(0x31, 0x33, 0x37));
+        B(0x34, 0x37, 0x3B), B(0x60, 0xCD, 0xFF), B(0x1C, 0x1E, 0x21), B(0x31, 0x33, 0x37), B(0x2C, 0x2E, 0x32));
     static readonly Theme Light = new(B(0xF1, 0xF3, 0xF5), B(0x1B, 0x1F, 0x23), B(0x5D, 0x68, 0x72), B(0xD5, 0xD9, 0xDD),
-        B(0xE1, 0xE5, 0xE9), B(0x00, 0x5F, 0xB8), B(0xE4, 0xE8, 0xEB), B(0xE4, 0xE8, 0xEB));
-    static readonly FontFamily Ui = new("Segoe UI Variable Text, Segoe UI"), Mono = new("Cascadia Mono, Consolas");
+        B(0xE1, 0xE5, 0xE9), B(0x00, 0x5F, 0xB8), B(0xE4, 0xE8, 0xEB), B(0xE4, 0xE8, 0xEB), B(0xE8, 0xEB, 0xEE));
+    static readonly FontFamily Ui = new("Segoe UI Variable Text, Segoe UI"), Mono = new("Cascadia Mono, Consolas"),
+        Glyphs = new("Segoe Fluent Icons, Segoe MDL2 Assets");
 
     const double Pad = 14, FilterH = 30, FootH = 44;
 
@@ -41,8 +46,16 @@ sealed class Overlay : Window
     IntPtr _hwnd;
     bool _toastOnly;
     (IntPtr monitor, double left, double top, double width, double height, double scale) _mon;
+    ViewKind _view;
+    bool? _rounded;
+    N.POINT _cursor;
+    bool _moved;
 
     public event Action<Slot>? CardClicked;
+    /// <summary>Lanes only: the mouse moved onto a card. Not raised when a redraw puts a card under a still cursor.</summary>
+    public event Action<Slot>? CardHovered;
+    /// <summary>Lanes only: a click on the overview outside every card and the search box.</summary>
+    public event Action? BackgroundClicked;
     /// <summary>Fires once per show with (ms from show request to first composed frame).</summary>
     public event Action<double>? Composed;
 
@@ -68,11 +81,22 @@ sealed class Overlay : Window
             _hwnd = new WindowInteropHelper(this).Handle;
             long ex = Win.ExStyle(_hwnd) | N.WS_EX_TOOLWINDOW | N.WS_EX_NOACTIVATE;
             N.SetWindowLongPtr(_hwnd, N.GWL_EXSTYLE, (IntPtr)ex);
-            int round = 2;
-            N.DwmSetWindowAttribute(_hwnd, N.DWMWA_WINDOW_CORNER_PREFERENCE, ref round, 4);
+            Corners(true);
         };
         _toastTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1400) };
         _toastTimer.Tick += (_, _) => { _toastTimer.Stop(); if (_toastOnly) HideOverlay(); };
+        // WPF raises MouseMove when a redraw puts a card under a cursor that hasn't moved; only a real move hovers.
+        PreviewMouseMove += (_, _) => { N.GetCursorPos(out var p); _moved = p.X != _cursor.X || p.Y != _cursor.Y; _cursor = p; };
+        MouseLeftButtonUp += (_, _) => { if (_view == ViewKind.Lanes && IsUp && !_toastOnly) BackgroundClicked?.Invoke(); };
+    }
+
+    /// <summary>Rounded corners, except on the overview: it fills the work area, so round corners would show the desktop.</summary>
+    void Corners(bool round)
+    {
+        if (_rounded == round || _hwnd == IntPtr.Zero) return;
+        int pref = round ? 2 : 1;
+        N.DwmSetWindowAttribute(_hwnd, N.DWMWA_WINDOW_CORNER_PREFERENCE, ref pref, 4);
+        _rounded = round;
     }
 
     static Brush B(byte r, byte g, byte b) { var x = new SolidColorBrush(Color.FromRgb(r, g, b)); x.Freeze(); return x; }
@@ -106,11 +130,11 @@ sealed class Overlay : Window
     /// <summary>Create the HWND and draw real cards with real thumbnails once, off-screen, so the first
     /// real show doesn't pay for first-time WPF and DWM setup.</summary>
     /// <param name="warm">Called once the off-screen frame is drawn and the window is hidden again.</param>
-    public void Prewarm(List<Section> secs, bool columns, Action? warm = null)
+    public void Prewarm(List<Section> secs, ViewKind view, Action? warm = null)
     {
         new WindowInteropHelper(this).EnsureHandle();
         _offscreen = true;
-        ShowSections(secs, null, "", 0, "", "", columns, offscreen: true);
+        ShowSections(secs, null, "", 0, "", "", view, offscreen: true);
         EventHandler? done = null;
         done = (_, _) =>
         {
@@ -122,8 +146,7 @@ sealed class Overlay : Window
 
     /// <param name="why">Footer line for the selected window.</param>
     /// <param name="hints">Key hints for the footer's second line.</param>
-    /// <param name="columns">The columns layout instead of the grid.</param>
-    public void ShowSections(List<Section> secs, Slot? sel, string filter, int hidden, string why, string hints, bool columns = false, bool offscreen = false)
+    public void ShowSections(List<Section> secs, Slot? sel, string filter, int hidden, string why, string hints, ViewKind view = ViewKind.Grid, bool offscreen = false)
     {
         long tReq = Stopwatch.GetTimestamp();
         _toastTimer.Stop();
@@ -132,8 +155,28 @@ sealed class Overlay : Window
         _canvas.Children.Clear();
         _cards.Clear();
 
-        if (!IsUp || offscreen) { _mon = MonitorUnderCursor(); _t = LightTheme() ? Light : Dark; }
+        if (!IsUp || offscreen) { _mon = MonitorUnderCursor(); _t = LightTheme() ? Light : Dark; N.GetCursorPos(out _cursor); }
         Background = _t.Pane;
+        _view = view;
+        var slots = new List<(IntPtr src, Rect r)>();
+        var (winW, winH) = view == ViewKind.Lanes
+            ? DrawLanes(secs, filter, hidden, why, hints, slots)
+            : DrawPanel(secs, filter, hidden, why, hints, view == ViewKind.Columns, slots);
+
+        Position(winW, winH, offscreen, bottom: false);
+        Corners(view != ViewKind.Lanes);
+        SetSelection(sel, null);
+
+        if (!IsVisible) Show();
+        UpdateLayout();
+        double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        foreach (var (src, r) in slots) AddThumb(src, r, dpi);
+        if (!offscreen) ReportComposed(tReq);
+    }
+
+    /// <summary>Alt+Tab: a pane sized to its cards, centered. Returns the window's size in DIPs.</summary>
+    (double w, double h) DrawPanel(List<Section> secs, string filter, int hidden, string why, string hints, bool columns, List<(IntPtr src, Rect r)> slots)
+    {
         double workW = _mon.width, workH = _mon.height;
         double maxW = workW * 0.92 - 2 * Pad;
         double maxH = workH * 0.88 - 2 * Pad - (filter.Length > 0 ? FilterH : 0) - FootH;
@@ -157,12 +200,38 @@ sealed class Overlay : Window
         double ox = Pad + (innerW - L.width) / 2, oy = top;
         if (secs.Count == 0)
         {
-            var empty = new TextBlock { Text = filter.Length > 0 ? "No windows match" : "No windows", FontFamily = Ui, FontSize = 14, Foreground = _t.Muted, Width = innerW, TextAlignment = TextAlignment.Center };
-            Place(empty, Pad, oy + 24);
+            Place(Empty(filter, innerW), Pad, oy + 24);
             L = L with { height = 70 };
         }
         foreach (var h in L.heads) Place(Header(h.S, h.W), ox + h.X + (h.W > 0 ? 0 : 4), oy + h.Y);
-        var slots = new List<(IntPtr src, Rect r)>();
+        PlaceCards(L, ox, oy, slots);
+        top = oy + L.height + 8;
+
+        Footer(why, hints, hidden, Pad, top, innerW);
+        return (winW, top + FootH - 4 + Pad);
+    }
+
+    /// <summary>Win+Tab: the whole work area, the search box on top, one full-height lane per section.</summary>
+    (double w, double h) DrawLanes(List<Section> secs, string filter, int hidden, string why, string hints, List<(IntPtr src, Rect r)> slots)
+    {
+        double workW = _mon.width, workH = _mon.height;
+        var o = Layouts.Lanes(secs, workW, workH);
+        Place(SearchBox(secs, filter), Math.Round((workW - SearchW) / 2), SearchTop);
+        foreach (var h in o.L.heads)
+            Place(new Border
+            {
+                Width = h.W + 2 * LanePad, Height = o.LaneH + 2 * LanePad, CornerRadius = new CornerRadius(10),
+                Background = _t.Lane, BorderBrush = _t.Edge, BorderThickness = new Thickness(1),
+            }, o.X + h.X - LanePad, o.Y - LanePad);
+        if (secs.Count == 0) Place(Empty(filter, workW), 0, o.Y + 120);
+        foreach (var h in o.L.heads) Place(Header(h.S, h.W), o.X + h.X, o.Y + h.Y);
+        PlaceCards(o.L, o.X, o.Y, slots);
+        Footer(why, hints, hidden, LanesSide, o.FootY, workW - 2 * LanesSide);
+        return (workW, workH);
+    }
+
+    void PlaceCards(Layouts.Result L, double ox, double oy, List<(IntPtr src, Rect r)> slots)
+    {
         foreach (var c in L.cards)
         {
             var card = Card(c.Item, c.Slot, L.cw, L.thumbH);
@@ -170,24 +239,49 @@ sealed class Overlay : Window
             _cards[c.Slot] = card;
             if (!c.Item.W.Minimized) slots.Add((c.Item.W.Hwnd, new Rect(ox + c.X + CardPad, oy + c.Y + CardPad, L.cw - 2 * CardPad, L.thumbH)));
         }
-        top = oy + L.height + 8;
+    }
 
-        _why = new TextBlock { FontFamily = Ui, FontSize = 12, Foreground = _t.Muted, TextTrimming = TextTrimming.CharacterEllipsis, Width = innerW };
+    TextBlock Empty(string filter, double w) =>
+        new() { Text = filter.Length > 0 ? "No windows match" : "No windows", FontFamily = Ui, FontSize = 14, Foreground = _t.Muted, Width = w, TextAlignment = TextAlignment.Center };
+
+    /// <summary>The Why line for the selected window, then the key hints.</summary>
+    void Footer(string why, string hints, int hidden, double x, double y, double w)
+    {
+        _why = new TextBlock { FontFamily = Ui, FontSize = 12, Foreground = _t.Muted, TextTrimming = TextTrimming.CharacterEllipsis, Width = w };
         SetWhy(why);
-        Place(_why, Pad, top);
-        var hintRow = new TextBlock { FontFamily = Ui, FontSize = 11, Foreground = _t.Muted, TextTrimming = TextTrimming.CharacterEllipsis, Width = innerW, Opacity = 0.85 };
+        Place(_why, x, y);
+        var hintRow = new TextBlock { FontFamily = Ui, FontSize = 11, Foreground = _t.Muted, TextTrimming = TextTrimming.CharacterEllipsis, Width = w, Opacity = 0.85 };
         hintRow.Text = hidden > 0 ? $"{hints}   ·   {hidden} hidden by a rule" : hints;
-        Place(hintRow, Pad, top + 20);
-        double winH = top + FootH - 4 + Pad;
+        Place(hintRow, x, y + 20);
+    }
 
-        Position(winW, winH, offscreen, bottom: false);
-        SetSelection(sel, null);
-
-        if (!IsVisible) Show();
-        UpdateLayout();
-        double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        foreach (var (src, r) in slots) AddThumb(src, r, dpi);
-        if (!offscreen) ReportComposed(tReq);
+    /// <summary>The overview's search box: what has been typed, or a prompt to type.</summary>
+    UIElement SearchBox(List<Section> secs, string filter)
+    {
+        int n = secs.Sum(s => s.Items.Count);
+        var dock = new DockPanel { LastChildFill = true };
+        var glyph = new TextBlock { Text = "\uE721", FontFamily = Glyphs, FontSize = 13, Foreground = _t.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 1, 9, 0) };
+        DockPanel.SetDock(glyph, Dock.Left);
+        dock.Children.Add(glyph);
+        var count = new TextBlock
+        {
+            Text = filter.Length > 0 ? $"{n} match{(n == 1 ? "" : "es")} · Backspace to edit · Esc to clear" : $"{n} window{(n == 1 ? "" : "s")}",
+            FontFamily = Ui, FontSize = 12, Foreground = _t.Muted, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0),
+        };
+        DockPanel.SetDock(count, Dock.Right);
+        dock.Children.Add(count);
+        var text = new TextBlock { FontFamily = Ui, FontSize = 13.5, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        text.Inlines.Add(filter.Length > 0
+            ? new Run(filter) { FontFamily = Mono, Foreground = _t.Ink, Background = _t.CardHi }
+            : new Run("Type to search windows") { Foreground = _t.Muted });
+        dock.Children.Add(text);
+        var box = new Border
+        {
+            Width = SearchW, Height = SearchH, CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1), BorderBrush = _t.Edge,
+            Background = _t.Badge, Padding = new Thickness(13, 0, 13, 0), Child = dock,
+        };
+        box.MouseLeftButtonUp += (_, e) => e.Handled = true; // typing is the search; a click on the box isn't a click outside
+        return box;
     }
 
     void ReportComposed(long tReq)
@@ -301,6 +395,7 @@ sealed class Overlay : Window
             Background = Brushes.Transparent, BorderBrush = Brushes.Transparent, Child = body, Cursor = Cursors.Hand, Tag = slot,
         };
         card.MouseLeftButtonUp += (s, e) => { e.Handled = true; CardClicked?.Invoke((Slot)((Border)s).Tag); };
+        card.MouseMove += (s, _) => { if (_moved && _view == ViewKind.Lanes) { _moved = false; CardHovered?.Invoke((Slot)((Border)s).Tag); } };
         return card;
     }
 
@@ -362,6 +457,8 @@ sealed class Overlay : Window
         _mon = MonitorUnderCursor();
         _t = LightTheme() ? Light : Dark;
         Background = _t.Pane;
+        _view = ViewKind.Grid;
+        Corners(true);
         var tb = new TextBlock { Text = text, FontFamily = Ui, FontSize = 13, Foreground = _t.Ink, MaxWidth = _mon.width * 0.6, TextTrimming = TextTrimming.CharacterEllipsis };
         tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         Place(tb, 16, 10);
@@ -376,6 +473,19 @@ sealed class Overlay : Window
     {
         foreach (var t in _thumbs) N.DwmUnregisterThumbnail(t);
         _thumbs.Clear();
+    }
+
+    /// <summary>Self-test: where each card is on screen, in physical pixels.</summary>
+    public List<object> CardRects()
+    {
+        var list = new List<object>();
+        foreach (var (slot, card) in _cards)
+        {
+            var a = card.PointToScreen(new Point(0, 0));
+            var b = card.PointToScreen(new Point(card.Width, card.Height));
+            list.Add(new { sec = slot.Section, hwnd = slot.Hwnd.ToInt64(), x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y) });
+        }
+        return list;
     }
 
     /// <summary>Save what is on screen under the overlay, thumbnails included, as a PNG.</summary>

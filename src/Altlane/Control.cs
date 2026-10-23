@@ -19,9 +19,11 @@ sealed class ControlWindow : NativeWindow, IDisposable
     public static readonly uint MsgDropHook = N.RegisterWindowMessage("Altlane.Test.DropHook");
     /// <summary>Test mode only: wParam 1 switches Alt+Tab to the columns layout, 0 back to the grid. Not saved.</summary>
     public static readonly uint MsgLayout = N.RegisterWindowMessage("Altlane.Test.Layout");
+    /// <summary>Test mode only: wParam 1 sends Win+Tab to the lanes overview, 0 leaves it to Task View. Not saved.</summary>
+    public static readonly uint MsgWinTab = N.RegisterWindowMessage("Altlane.Test.WinTab");
 
     public event Action? QuitRequested, SettingsRequested, DropHookRequested;
-    public event Action<bool>? LayoutRequested;
+    public event Action<bool>? LayoutRequested, WinTabRequested;
     readonly bool _test;
     /// <summary>Event time (GetTickCount clock) of the last raw keyboard input, and how many arrived.</summary>
     public int LastRaw { get; private set; }
@@ -58,6 +60,7 @@ sealed class ControlWindow : NativeWindow, IDisposable
         else if ((uint)m.Msg == MsgSettings) SettingsRequested?.Invoke();
         else if (_test && (uint)m.Msg == MsgDropHook) DropHookRequested?.Invoke();
         else if (_test && (uint)m.Msg == MsgLayout) LayoutRequested?.Invoke(m.WParam != IntPtr.Zero);
+        else if (_test && (uint)m.Msg == MsgWinTab) WinTabRequested?.Invoke(m.WParam != IntPtr.Zero);
         base.WndProc(ref m);
     }
 

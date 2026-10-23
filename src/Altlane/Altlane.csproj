@@ -15,12 +15,12 @@
     <SelfContained>false</SelfContained>
     <AssemblyName>Altlane</AssemblyName>
     <RootNamespace>Altlane</RootNamespace>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <Product>Altlane</Product>
     <Authors>Dr. Know How</Authors>
     <Company>Dr. Know How</Company>
     <Copyright>Copyright (c) 2026 Dr. Know How. MIT License.</Copyright>
-    <Description>Alt+Tab, grouped by kind of window</Description>
+    <Description>Alt+Tab and Win+Tab, grouped by kind of window</Description>
     <!-- WinForms is here for NotifyIcon only; WPF owns the UI. -->
     <NoWarn>WFO0003</NoWarn>
   </PropertyGroup>

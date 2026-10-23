@@ -29,6 +29,8 @@ sealed class Settings
     public bool DirectJump { get; set; }
     /// <summary>Alt+Tab's view: "grid" (sections that wrap into rows) or "columns" (one column per section).</summary>
     public string Layout { get; set; } = GridLayout;
+    /// <summary>Win+Tab opens Altlane's lanes overview. Off leaves Win+Tab to Windows' Task View.</summary>
+    public bool WinTabLanes { get; set; } = true;
 
     public const string GridLayout = "grid", ColumnsLayout = "columns";
     [System.Text.Json.Serialization.JsonIgnore] public bool Columns => string.Equals(Layout, ColumnsLayout, StringComparison.OrdinalIgnoreCase);

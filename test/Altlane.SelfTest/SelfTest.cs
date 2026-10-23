@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 namespace Altlane;
@@ -76,7 +77,7 @@ static partial class SelfTest
             Phase("T8_regroup", T8);
             Phase("T9_close", T9);
             Phase("T10_watchdog", T10);
-            Phase("T11_win_tab_native", T11);
+            Phase("T11_win_tab_lanes", T11);
             Phase("T12_start_open", T12);
             Phase("C_detector_controls", Controls); // last: Start can hold the foreground for a while after it closes
         }
@@ -252,11 +253,15 @@ static partial class SelfTest
         finally { SetLayout(columns: false); }
     }
 
-    /// <summary>The driver's own model of the columns layout's keys, from the first card, where Alt+Tab opens.</summary>
-    static (string sec, IntPtr h) ColumnMoves(List<(string sec, IntPtr h)> flat, ushort[] keys)
+    /// <summary>
+    /// The driver's own model of the columns layout's keys, from <paramref name="start"/>: the first card,
+    /// where Alt+Tab opens, unless given. Number keys go to a group's first card, ` to the next column's.
+    /// </summary>
+    static (string sec, IntPtr h) ColumnMoves(List<(string sec, IntPtr h)> flat, ushort[] keys, (string sec, IntPtr h)? start = null)
     {
         var cols = flat.GroupBy(x => x.sec).Select(g => g.ToList()).ToList();
-        int c = 0, r = 0;
+        int c = start is { } s0 ? cols.FindIndex(col => col.Contains(s0)) : 0;
+        int r = start is { } s1 ? cols[c].IndexOf(s1) : 0;
         foreach (var k in keys)
         {
             if (k == N.VK_TAB)
@@ -264,6 +269,12 @@ static partial class SelfTest
                 var next = flat[(flat.IndexOf(cols[c][r]) + 1) % flat.Count];
                 c = cols.FindIndex(col => col.Contains(next));
                 r = cols[c].IndexOf(next);
+            }
+            else if (k == N.VK_OEM_3) { c = (c + 1) % cols.Count; r = 0; }
+            else if (k is >= '1' and <= '9')
+            {
+                int g = k - '1' < GroupOrder.Length ? cols.FindIndex(col => col[0].sec == GroupOrder[k - '1']) : -1;
+                if (g >= 0) { c = g; r = 0; }
             }
             else if (k is N.VK_DOWN or N.VK_UP) r = Math.Clamp(r + (k == N.VK_DOWN ? 1 : -1), 0, cols[c].Count - 1);
             else { c = (c + (k == N.VK_RIGHT ? 1 : -1) + cols.Count) % cols.Count; r = Math.Min(r, cols[c].Count - 1); }
@@ -497,25 +508,264 @@ static partial class SelfTest
 
     // ---------- Win+Tab ----------
 
-    /// <summary>Phase 1 leaves Win+Tab alone: it must still open Windows' Task View, with no overlay.</summary>
+    /// <summary>
+    /// Win+Tab opens the lanes overview and leaves it open once Win is up: every window once, in its group,
+    /// starting on the previous window. Keys move as in the columns layout, typing searches, the mouse
+    /// hovers and clicks, Esc, Win+Tab again or a click outside close it. Shift+Win+Tab, and Win+Tab with
+    /// the setting off, still open Windows' Task View.
+    /// </summary>
     static void T11()
     {
-        for (int i = 0; i < 2; i++)
+        N.GetCursorPos(out var home);
+        // A fixed spot over the overview, so the key-only steps prove a still cursor selects nothing.
+        var wa = System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point(home.X, home.Y)).WorkingArea;
+        MouseTo(wa.Left + wa.Width / 2, wa.Top + wa.Height / 2);
+        try
         {
-            EnsureFront();
-            IntPtr fg0 = N.GetForegroundWindow();
-            var before = Visible();
-            Down(N.VK_LWIN); Pause(25); Tap(N.VK_TAB, 20); Pause(25); Up(N.VK_LWIN);
-            bool start = WatchStart(300);
-            Pause(700);
-            var native = NativeCheck(before);
-            bool ov = Shown(_overlay);
-            Tap(N.VK_ESCAPE); Pause(800);
-            bool back = N.GetForegroundWindow() == fg0;
-            Row("T11", i, new() { ["ok"] = native.Contains("task_view") && !ov && !start, ["native"] = native, ["overlay"] = ov, ["start_open"] = start, ["fg_back"] = back });
-            if (!back && N.IsWindow(fg0)) Activate(fg0);
-            Pause(300);
+            string[] order = { "alpha", "charlie", "bravo", "delta", "echo" };
+            var steps = new (string what, ushort[] keys)[]
+            {
+                ("enter_goes_back", Array.Empty<ushort>()),
+                ("tab", new[] { N.VK_TAB }),
+                ("right", new[] { N.VK_RIGHT }),
+                ("left_down", new[] { N.VK_LEFT, N.VK_DOWN }),
+                ("right_x2_wraps_down_x2", new[] { N.VK_RIGHT, N.VK_RIGHT, N.VK_DOWN, N.VK_DOWN }),
+                ("down_at_foot_stays", new[] { N.VK_DOWN }),
+                ("grave", new[] { N.VK_OEM_3 }),
+                ("5_files", new[] { (ushort)'5' }),
+                ("1_down_x3_up", new[] { (ushort)'1', N.VK_DOWN, N.VK_DOWN, N.VK_DOWN, N.VK_UP }),
+            };
+            int i = 0;
+            foreach (var (what, keys) in steps)
+            {
+                Reset(order);
+                var flat = ExpectedLanes();
+                var first = flat.First(x => x.h == Mru[1]);
+                var want = ColumnMoves(flat, keys, first);
+                string view = ViewString(flat);
+                Switch("T11", i++, want.h, _ =>
+                {
+                    WinTab(); Pause(250);
+                    var row = OpenChecks(what);
+                    foreach (var k in keys) { Tap(k); Pause(60); }
+                    Pause(40);
+                    Tap(N.VK_RETURN);
+                    return row;
+                }, section: want.sec, index: flat.IndexOf(want), logCheck: (ev, row) => LanesOpened(ev, row, view, first.h) && NoHover(ev, row));
+            }
+
+            Reset(order);
+            Switch("T11", i++, W["echo"], _ =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("search");
+                foreach (char c in "ECH") { Tap(c, 20); Pause(40); }
+                Pause(150);
+                row["must_open_while_searching"] = Shown(_overlay);
+                Tap(N.VK_RETURN);
+                return row;
+            }, section: "files", index: 0, logCheck: (ev, row) =>
+            {
+                var v = ev.LastOrDefault(e => Ev(e) == "view");
+                row["last_view"] = ViewOf(v);
+                return Str(v, "filter") == "ech" && Str(v, "layout") == "lanes" && (string?)row["last_view"] == "files:echo" && NoHover(ev, row);
+            });
+
+            Reset(order);
+            NoSwitch("T11", i++, "esc_closes", () =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("esc");
+                Tap(N.VK_ESCAPE);
+                return row;
+            }, ev => ev.Any(e => Ev(e) == "cancel" && Str(e, "why") == "esc"));
+
+            NoSwitch("T11", i++, "esc_clears_search_then_closes", () =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("esc_search");
+                Tap('Z'); Pause(30); Tap('Z'); Pause(150);
+                Tap(N.VK_ESCAPE); Pause(200);
+                row["must_open_after_first_esc"] = Shown(_overlay);
+                Tap(N.VK_ESCAPE);
+                return row;
+            }, ev =>
+            {
+                int zz = ev.FindIndex(e => Ev(e) == "view" && Str(e, "filter") == "zz");
+                return zz >= 0 && ev.Skip(zz).Any(e => Ev(e) == "view" && Str(e, "filter") == "")
+                       && ev.Any(e => Ev(e) == "cancel" && Str(e, "why") == "esc");
+            });
+
+            NoSwitch("T11", i++, "win_tab_again_closes", () =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("toggle");
+                WinTab(); Pause(100);
+                return row;
+            }, ev => ev.Any(e => Ev(e) == "cancel" && Str(e, "why") == "win_tab"));
+
+            // The mouse: hover selects, a click on a card switches, a click anywhere else closes.
+            Reset(order);
+            IntPtr hoverTo = Mru[2];
+            var seen = new List<JsonElement>();
+            Switch("T11", i++, hoverTo, _ =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("hover");
+                row["must_cursor_on_card"] = PointAt(hoverTo, seen);
+                Pause(150);
+                Tap(N.VK_RETURN);
+                return row;
+            }, logCheck: (ev, row) =>
+            {
+                var all = seen.Concat(ev).ToList();
+                row["hovered"] = string.Join(",", all.Where(e => Ev(e) == "hover").Select(e => Name((IntPtr)e.GetProperty("sel").GetInt64())));
+                return all.Any(e => Ev(e) == "hover" && e.GetProperty("sel").GetInt64() == hoverTo.ToInt64())
+                       && Str(all.LastOrDefault(e => Ev(e) == "switch"), "how") == "enter";
+            });
+
+            Reset(order);
+            IntPtr clickOn = Mru[3];
+            var seen2 = new List<JsonElement>();
+            Switch("T11", i++, clickOn, _ =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("click_card");
+                row["must_cursor_on_card"] = PointAt(clickOn, seen2);
+                Pause(100);
+                Click();
+                return row;
+            }, logCheck: (ev, row) => Str(seen2.Concat(ev).LastOrDefault(e => Ev(e) == "switch"), "how") == "click");
+
+            Reset(order);
+            NoSwitch("T11", i++, "click_outside_closes", () =>
+            {
+                WinTab(); Pause(250);
+                var row = OpenChecks("click_outside");
+                N.GetWindowRect(_overlay, out var r);
+                MouseTo(r.Left + 12, r.Top + 12); Pause(80);
+                Click();
+                return row;
+            }, ev => ev.Any(e => Ev(e) == "cancel" && Str(e, "why") == "click_outside"));
         }
+        finally { MouseTo(home.X, home.Y); }
+
+        // Task View stays one key away.
+        TaskView(0, "shift_win_tab", () => { Down(N.VK_LSHIFT); Pause(20); WinTab(); Pause(20); Up(N.VK_LSHIFT); },
+            ev => ev.Any(e => Ev(e) == "task_view") && !ev.Any(e => Ev(e) == "session_start"));
+        TaskView(1, "shift_win_tab_from_overview", () =>
+        {
+            WinTab(); Pause(250);
+            if (!Shown(_overlay)) Log.Write("overview_not_open", new { });
+            Down(N.VK_LSHIFT); Pause(20); WinTab(); Pause(20); Up(N.VK_LSHIFT);
+        }, ev => ev.Any(e => Ev(e) == "session_start" && Str(e, "kind") == "overview") && ev.Any(e => Ev(e) == "task_view")
+            // Task View taking the foreground can reach Altlane before the hook's own event does; either one closes the overview.
+            && ev.Any(e => Ev(e) == "cancel" && Str(e, "why") is "shift_win_tab" or "foreground_changed"));
+        SetWinTab(false);
+        try
+        {
+            for (int k = 2; k < 4; k++) TaskView(k, "setting_off", WinTab, ev => !ev.Any(e => Ev(e) == "session_start"));
+        }
+        finally { SetWinTab(true); }
+    }
+
+    /// <summary>Win down, Tab, Win up.</summary>
+    static void WinTab() { Down(N.VK_LWIN); Pause(25); Tap(N.VK_TAB, 20); Pause(25); Up(N.VK_LWIN); }
+
+    /// <summary>Just after Win+Tab, with Win already up: the overview must be open and Start must not be.</summary>
+    static Dictionary<string, object?> OpenChecks(string what) =>
+        new() { ["what"] = what, ["must_open_after_win_up"] = Shown(_overlay), ["must_no_start"] = !StartOpen() };
+
+    /// <summary>The overview's first view: groups only, the model's order, opened on the previous window.</summary>
+    static bool LanesOpened(List<JsonElement> ev, Dictionary<string, object?> row, string view, IntPtr first)
+    {
+        var v = ev.FirstOrDefault(e => Ev(e) == "view");
+        row["view"] = ViewOf(v);
+        row["layout"] = Str(v, "layout");
+        row["opened_on"] = v.ValueKind == JsonValueKind.Object && v.TryGetProperty("sel", out var s) && s.ValueKind == JsonValueKind.Number ? Name((IntPtr)s.GetInt64()) : null;
+        return (string?)row["view"] == view && (string?)row["layout"] == "lanes" && (string?)row["opened_on"] == Name(first)
+               && ev.Any(e => Ev(e) == "session_start" && Str(e, "kind") == "overview");
+    }
+
+    /// <summary>The cursor sat over the overview and never moved: a redraw must not select the card under it.</summary>
+    static bool NoHover(List<JsonElement> ev, Dictionary<string, object?> row) => (row["hovers"] = ev.Count(e => Ev(e) == "hover")) is 0;
+
+    /// <summary>Win+Tab that should reach Windows' Task View, with no overview and no Start.</summary>
+    static void TaskView(int i, string what, Action keys, Func<List<JsonElement>, bool> logCheck)
+    {
+        EnsureFront();
+        Tail();
+        IntPtr fg0 = N.GetForegroundWindow();
+        var before = Visible();
+        keys();
+        bool start = WatchStart(300);
+        Pause(700);
+        var native = NativeCheck(before);
+        bool ov = Shown(_overlay);
+        Tap(N.VK_ESCAPE); Pause(800);
+        bool back = N.GetForegroundWindow() == fg0;
+        bool logOk = logCheck(Tail());
+        Row("T11tv", i, new() { ["what"] = what, ["ok"] = native.Contains("task_view") && !ov && !start && logOk, ["native"] = native, ["overlay"] = ov, ["start_open"] = start, ["log_ok"] = logOk, ["fg_back"] = back });
+        if (!back && N.IsWindow(fg0)) Activate(fg0);
+        Pause(300);
+    }
+
+    /// <summary>Switch what Win+Tab does through Altlane's test-only control message. Not saved to settings.json.</summary>
+    static void SetWinTab(bool lanes)
+    {
+        IntPtr ctl = N.FindWindowEx(N.HWND_MESSAGE, IntPtr.Zero, null, ControlTitle);
+        N.PostMessage(ctl, (int)N.RegisterWindowMessage("Altlane.Test.WinTab"), (IntPtr)(lanes ? 1 : 0), IntPtr.Zero);
+        Pause(150);
+        Log.Write("win_tab_set", new { lanes, ctl = ctl.ToInt64() });
+    }
+
+    // ---------- the mouse ----------
+
+    [DllImport("user32")] static extern int GetSystemMetrics(int index);
+    const uint MouseMove = 0x0001, MouseLeftDown = 0x0002, MouseLeftUp = 0x0004, MouseVirtualDesk = 0x4000, MouseAbsolute = 0x8000;
+
+    static void SendMouse(uint flags, int dx = 0, int dy = 0)
+    {
+        var input = new N.INPUT { type = 0 };
+        input.u.mi = new N.MOUSEINPUT { dx = dx, dy = dy, dwFlags = flags, dwExtraInfo = Drv };
+        Keys.Send(input);
+    }
+
+    /// <summary>Put the cursor on a physical pixel, as injected input so the guard knows it is ours.</summary>
+    static void MouseTo(int x, int y)
+    {
+        Check();
+        int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77), vw = GetSystemMetrics(78), vh = GetSystemMetrics(79);
+        SendMouse(MouseMove | MouseAbsolute | MouseVirtualDesk,
+            (int)Math.Round((x - vx) * 65535.0 / Math.Max(1, vw - 1)), (int)Math.Round((y - vy) * 65535.0 / Math.Max(1, vh - 1)));
+    }
+
+    static void Click()
+    {
+        Check(); CheckTarget();
+        SendMouse(MouseLeftDown); Pause(40); SendMouse(MouseLeftUp);
+    }
+
+    /// <summary>Move the cursor onto a window's card, from where Altlane says it drew it. True when it got there.</summary>
+    static bool PointAt(IntPtr h, List<JsonElement> seen)
+    {
+        var sw = Stopwatch.StartNew();
+        JsonElement card = default;
+        while (sw.ElapsedMilliseconds < 1500 && card.ValueKind != JsonValueKind.Object)
+        {
+            seen.AddRange(Tail());
+            var v = seen.LastOrDefault(e => Ev(e) == "view");
+            if (v.ValueKind == JsonValueKind.Object && v.TryGetProperty("cards", out var cards) && cards.ValueKind == JsonValueKind.Array)
+                card = cards.EnumerateArray().FirstOrDefault(c => c.GetProperty("hwnd").GetInt64() == h.ToInt64());
+            if (card.ValueKind != JsonValueKind.Object) Pause(30);
+        }
+        if (card.ValueKind != JsonValueKind.Object) return false;
+        int x = card.GetProperty("x").GetInt32(), y = card.GetProperty("y").GetInt32(), w = card.GetProperty("w").GetInt32(), hh = card.GetProperty("h").GetInt32();
+        // Two moves, so the card gets a move that changes the cursor's position.
+        MouseTo(x + w / 2 - 6, y + hh / 2 - 6); Pause(40);
+        MouseTo(x + w / 2, y + hh / 2); Pause(60);
+        N.GetCursorPos(out var p);
+        return p.X >= x && p.X < x + w && p.Y >= y && p.Y < y + hh;
     }
 
     /// <summary>

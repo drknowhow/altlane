@@ -159,6 +159,13 @@ static partial class SelfTest
         return flat;
     }
 
+    /// <summary>The Win+Tab overview in reading order, as the model predicts it: each group's windows, most recent first, no Recent.</summary>
+    static List<(string sec, IntPtr h)> ExpectedLanes()
+    {
+        var live = LiveMru();
+        return GroupOrder.SelectMany(g => live.Where(h => Grp[h] == g).Select(h => (g, h))).ToList();
+    }
+
     /// <summary>"recent:bravo,charlie,delta agents:alpha,bravo …", readable in a failed row.</summary>
     static string ViewString(List<(string sec, IntPtr h)> flat) =>
         string.Join(" ", flat.GroupBy(x => x.sec).Select(g => g.Key + ":" + string.Join(",", g.Select(x => Name(x.h)))));

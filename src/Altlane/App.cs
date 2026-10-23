@@ -150,7 +150,7 @@ static class App
         var wt = new WindowTracker(test ? "Altlane test" : null, exe => rules.Current.IsBrowser(exe));
         var ctl = new SwitchController(ov, wt, rules, settings, test) { ShotDir = o.GetValueOrDefault("shot-dir") };
         var hook = _hook = new KeyboardHook(_app.Dispatcher, ctl.OnHook);
-        void ApplySettings() { hook.SameGroupKey = settings.SameGroupKey; hook.DirectJump = settings.DirectJump; }
+        void ApplySettings() { hook.SameGroupKey = settings.SameGroupKey; hook.DirectJump = settings.DirectJump; hook.WinTab = settings.WinTabLanes; }
         ApplySettings();
         ctl.Attach(hook);
         hook.Start();
@@ -159,12 +159,13 @@ static class App
         _ctl.QuitRequested += () => Quit("quit_message");
         _ctl.DropHookRequested += () => hook.DropForTest();
         _ctl.LayoutRequested += columns => { settings.Layout = columns ? Settings.ColumnsLayout : Settings.GridLayout; Log.Write("layout", new { layout = settings.Layout }); };
+        _ctl.WinTabRequested += on => { settings.WinTabLanes = hook.WinTab = on; Log.Write("win_tab", new { lanes = on }); };
         _watchdog = new HookWatchdog(_hook, _ctl, _app.Dispatcher);
         _watchdog.Start();
 
         // Draw real cards with real thumbnails once off-screen, so the first Alt+Tab isn't the slow one.
         // Ready only once that frame is drawn and hidden: a session before then would race the warm-up.
-        ov.Prewarm(ctl.Preview(), settings.Columns, () =>
+        ov.Prewarm(ctl.Preview(), settings.Columns ? ViewKind.Columns : ViewKind.Grid, () =>
         {
             Log.Write("ready", new
             {

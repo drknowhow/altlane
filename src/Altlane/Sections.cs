@@ -25,14 +25,15 @@ static class Sections
     /// <param name="mru">Visible windows, most recent first. When the window in front is one of them it is
     /// first and marked IsCurrent; when the desktop or a tool window has focus, none is.</param>
     /// <param name="only">Alt+` scope: just this group, and no Recent row.</param>
-    public static List<Section> Build(IReadOnlyList<Item> mru, IReadOnlyList<Group> groups, string filter, string? only = null)
+    /// <param name="recent">False for Win+Tab's overview, where each window appears once, in its group.</param>
+    public static List<Section> Build(IReadOnlyList<Item> mru, IReadOnlyList<Group> groups, string filter, string? only = null, bool recent = true)
     {
         var q = filter.Trim();
         bool Matches(Item it) => q.Length == 0
             || (it.W.Title + " " + it.W.AppName + " " + Exe(it.W.Exe) + " " + it.P.Group?.Name).Contains(q, StringComparison.OrdinalIgnoreCase);
 
         var outp = new List<Section>();
-        if (q.Length == 0 && only == null)
+        if (q.Length == 0 && only == null && recent)
         {
             int skip = mru.Count > 0 && mru[0].IsCurrent ? 1 : 0;
             var rec = mru.Skip(skip).Take(RecentCount).ToList();

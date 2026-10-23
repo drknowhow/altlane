@@ -6,20 +6,21 @@ using System.Windows.Threading;
 
 namespace Altlane;
 
-enum HookKind { AltStart, AltRelease, Key, Direct, Panic, Expired }
+enum HookKind { AltStart, AltRelease, WinStart, WinToggle, ShiftWinTab, Key, Direct, Panic, Expired }
 
 /// <param name="Ts">Stopwatch timestamp taken on entry to the hook callback.</param>
 /// <param name="Grave">AltStart only: the session began with Alt+` (same-group) rather than Alt+Tab.</param>
 /// <param name="Num">Direct only: the number key pressed with Alt.</param>
 readonly record struct HookEvent(HookKind Kind, ushort Vk, bool Shift, bool Ctrl, bool Grave, int Num, long Ts);
 
-enum Sess { None, Alt, AltSticky }
+enum Sess { None, Alt, AltSticky, Win }
 
 /// <summary>
 /// WH_KEYBOARD_LL on its own thread with its own message loop. The callback only tracks modifiers,
 /// decides swallow/pass, and posts an event to the UI dispatcher. Windows silently removes a
 /// low-level hook that answers too slowly, so nothing here may block; HookWatchdog notices a removal.
-/// Win+Tab is not touched in phase 1: it stays Windows' Task View.
+/// Win+Tab opens the lanes overview, which takes every key until it closes; Shift+Win+Tab and the
+/// WinTab setting turned off leave Windows' Task View.
 /// </summary>
 sealed class KeyboardHook
 {
@@ -28,6 +29,8 @@ sealed class KeyboardHook
 
     /// <summary>A session that swallows every key (sticky filter) gives up after this long.</summary>
     const double SessionLimitMs = 30_000;
+    /// <summary>The overview stays open as long as the UI answers; a key this long after an unanswered event ends it.</summary>
+    const double UiHungMs = 3_000;
     const uint WM_REHOOK = N.WM_USER + 1, WM_DROP = N.WM_USER + 2;
     /// <summary>Scan code of the key above Tab, whatever the layout calls it.</summary>
     const uint ScanGrave = 0x29;
@@ -43,9 +46,10 @@ sealed class KeyboardHook
     readonly bool[] _ateDown = new bool[256]; // a key whose down we swallowed: swallow its up too
     volatile Sess _sess;
     long _sessStart;
+    long _posted, _acked; // timestamps of the last event posted to the UI and the last one it handled
 
     /// <summary>Settings the hook reads on every key. Written by the UI thread.</summary>
-    public volatile bool Paused, SameGroupKey = true, DirectJump;
+    public volatile bool Paused, SameGroupKey = true, DirectJump, WinTab = true;
 
     /// <summary>Event time (GetTickCount clock) of the last key the hook saw, injected keys included.
     /// The watchdog compares it with the event time of the last raw input message.</summary>
@@ -117,6 +121,9 @@ sealed class KeyboardHook
     /// <summary>Called by the UI when a session ends on its side (commit, cancel, click, timeout).</summary>
     public void EndSession() => _sess = Sess.None;
 
+    /// <summary>Called by the UI as it handles each event, so the hook can tell a slow overview from a hung one.</summary>
+    public void Ack(long ts) => Volatile.Write(ref _acked, ts);
+
     public (int n, double p50, double p99, double max) Stats()
     {
         int n = Math.Min(_n, _us.Length);
@@ -151,6 +158,7 @@ sealed class KeyboardHook
     void Post(HookKind kind, long ts, ushort vk = 0, bool grave = false, int num = 0)
     {
         var ev = new HookEvent(kind, vk, Shift, Ctrl, grave, num, ts);
+        Volatile.Write(ref _posted, ts);
         _ui.BeginInvoke(DispatcherPriority.Send, _handler, ev);
     }
 
@@ -160,6 +168,12 @@ sealed class KeyboardHook
     {
         // A session that swallows everything must not outlive a hung or crashed UI.
         if (_sess == Sess.AltSticky && Clock.Between(_sessStart, ts) > SessionLimitMs)
+        {
+            _sess = Sess.None;
+            Post(HookKind.Expired, ts);
+        }
+        // The overview has no time limit, so a hung UI must not keep it swallowing keys.
+        if (_sess == Sess.Win && Volatile.Read(ref _acked) < Volatile.Read(ref _posted) && Clock.Between(Volatile.Read(ref _posted), ts) > UiHungMs)
         {
             _sess = Sess.None;
             Post(HookKind.Expired, ts);
@@ -217,6 +231,31 @@ sealed class KeyboardHook
             }
         }
 
+        if (down && vk == N.VK_TAB && WinKey && !Alt && !Ctrl && WinTab && _sess is Sess.None or Sess.AltSticky or Sess.Win)
+        {
+            // Win now has a key between its down and up: no Start menu on release.
+            Keys.Mask(Magic);
+            if (Shift)
+            {
+                // Shift+Win+Tab is the way to Windows' Task View: release Shift as far as the system knows
+                // and replay a plain Win+Tab, all marked so this hook passes it through.
+                var seq = new System.Collections.Generic.List<N.INPUT>();
+                if (_lshift) seq.Add(Keys.Key(N.VK_LSHIFT, true, Magic));
+                if (_rshift) seq.Add(Keys.Key(N.VK_RSHIFT, true, Magic));
+                seq.Add(Keys.Key(N.VK_TAB, false, Magic)); seq.Add(Keys.Key(N.VK_TAB, true, Magic));
+                Keys.Send(seq.ToArray());
+                _sess = Sess.None;
+                Post(HookKind.ShiftWinTab, ts);
+            }
+            else if (_sess == Sess.Win) { _sess = Sess.None; Post(HookKind.WinToggle, ts); }
+            else
+            {
+                _sess = Sess.Win; _sessStart = ts;
+                Post(HookKind.WinStart, ts);
+            }
+            return Eat(vk);
+        }
+
         if (_sess == Sess.None) return false;
 
         // Inside a session every non-modifier key belongs to the switcher.
@@ -226,7 +265,8 @@ sealed class KeyboardHook
             if (_sess == Sess.Alt && !Ctrl && (vk is >= 'A' and <= 'Z' || vk == N.VK_SPACE)) { _sess = Sess.AltSticky; _sessStart = ts; }
             // Alt+Shift and Ctrl+Shift switch the keyboard layout when nothing else is pressed in between.
             // Windows never sees the key we swallow, so give it one it can see.
-            if (Shift || Ctrl) Keys.Mask(Magic);
+            // Win+key with the key swallowed would leave Win pressed alone, which opens Start.
+            if (Shift || Ctrl || WinKey) Keys.Mask(Magic);
             Post(HookKind.Key, ts, vk, grave: grave);
             return Eat(vk);
         }

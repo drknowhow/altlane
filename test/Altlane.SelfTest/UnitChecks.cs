@@ -199,6 +199,11 @@ static class UnitChecks
         Check("Alt+number skips the window in front", Sections.Direct(mru, r.ByKey("agents")!)?.W.Hwnd == (IntPtr)4);
         Check("Alt+number on an empty group finds nothing", Sections.Direct(mru, r.ByKey("create")!) == null);
 
+        var lanes = Sections.Build(mru, r.Groups, "", recent: false);
+        Check("Win+Tab's overview has no Recent row and shows each window once, in its group",
+            lanes.All(s => s.Key != "recent") && Sections.Flat(lanes).Count == mru.Count && Sections.Flat(lanes).Select(x => x.Hwnd).Distinct().Count() == mru.Count);
+        Check("the overview's groups follow in number order", string.Join(",", lanes.Select(s => s.Key)) == "agents,term,web,files,docs");
+
         var desktop = mru.Select(i => i with { IsCurrent = false }).ToList();
         Check("with the desktop in front, Recent starts at the most recent window",
             Sections.Build(desktop, r.Groups, "")[0].Items.Select(i => (int)i.W.Hwnd).SequenceEqual(new[] { 1, 2, 3 }));
@@ -244,5 +249,32 @@ static class UnitChecks
 
         var grid = Layouts.Grid(tall, W, H);
         Check("grid: the same windows fit", Inside(grid, W, H) && Apart(grid), $"cw {grid.cw}, {grid.width}x{grid.height}");
+
+        // Win+Tab's overview fills the work area: 1536×864 at 125% less the taskbar is 1536×816 DIPs.
+        const double WW = 1536, WH = 816;
+        var typical = new List<Section> { Sec("a", 5), Sec("b", 3), Sec("c", 4), Sec("d", 2), Sec("e", 1), Sec("f", 2) };
+        foreach (var (name, secs) in new[] { ("eight groups of one", eight), ("a group of twelve", tall), ("six mixed groups", typical) })
+        {
+            var o = Layouts.Lanes(secs, WW, WH);
+            var boxes = o.L.heads.Select(h => (h.S.Key, x: o.X + h.X - Layouts.LanePad, y: o.Y - Layouts.LanePad, w: h.W + 2 * Layouts.LanePad, h: o.LaneH + 2 * Layouts.LanePad)).ToList();
+            double ch = Layouts.CardH(o.L.thumbH);
+            bool inside = boxes.All(b => b.x >= Layouts.LanesSide - 0.5 && b.x + b.w <= WW - Layouts.LanesSide + 0.5);
+            bool between = boxes.All(b => b.y >= Layouts.SearchTop + Layouts.SearchH + 8 && b.y + b.h <= o.FootY - 8) && o.FootY + Layouts.LanesFootH <= WH;
+            bool apart = boxes.Zip(boxes.Skip(1), (p, q) => q.x - (p.x + p.w)).All(gap => gap >= 8);
+            bool cardsIn = o.L.cards.All(c =>
+            {
+                var b = boxes.First(x => x.Key == c.Slot.Section);
+                double cx = o.X + c.X, cy = o.Y + c.Y;
+                return cx >= b.x && cx + o.L.cw <= b.x + b.w + 0.01 && cy >= b.y && cy + ch <= b.y + b.h + 0.01;
+            });
+            bool centered = Math.Abs(o.X - (WW - o.X - o.L.width)) <= 1;
+            Check($"lanes, {name}: inside the work area, under the search box, over the footer, apart, cards in their lanes, centered",
+                inside && between && apart && cardsIn && centered && Apart(o.L),
+                $"inside {inside} between {between} apart {apart} cardsIn {cardsIn} centered {centered}; cw {o.L.cw}, lanes {o.X}..{o.X + o.L.width}");
+        }
+        var lw = Layouts.Lanes(typical, WW, WH).L;
+        Check("lanes: the overview's lanes sit further apart than Alt+Tab's columns", lw.heads[1].X - (lw.heads[0].X + lw.heads[0].W) == Layouts.LaneGapX);
+        int aSubs = lw.cards.Where(c => c.Slot.Section == "a").Select(c => c.X).Distinct().Count();
+        Check("lanes: a group of five, too tall for its lane, continues in a second column inside the same lane", aSubs == 2, $"{aSubs} columns, cw {lw.cw}");
     }
 }
