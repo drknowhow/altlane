@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Drives the real Altlane.exe with injected keys against its own test windows, and checks the
+       pure logic (rules, sections) in a unit mode. Not shipped. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>..\..\src\Altlane\app.manifest</ApplicationManifest>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>Altlane</RootNamespace>
+    <NoWarn>WFO0003</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Altlane\Native.cs" Link="Shared\Native.cs" />
+    <Compile Include="..\..\src\Altlane\Log.cs" Link="Shared\Log.cs" />
+    <Compile Include="..\..\src\Altlane\Activator.cs" Link="Shared\Activator.cs" />
+    <Compile Include="..\..\src\Altlane\Rules.cs" Link="Shared\Rules.cs" />
+    <Compile Include="..\..\src\Altlane\Sections.cs" Link="Shared\Sections.cs" />
+    <Compile Include="..\..\src\Altlane\WindowTracker.cs" Link="Shared\WindowTracker.cs" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\altlane.ico</ApplicationIcon>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <AssemblyName>Altlane</AssemblyName>
+    <RootNamespace>Altlane</RootNamespace>
+    <Version>0.1.1</Version>
+    <Product>Altlane</Product>
+    <Authors>Dr. Know How</Authors>
+    <Company>Dr. Know How</Company>
+    <Copyright>Copyright (c) 2026 Dr. Know How. MIT License.</Copyright>
+    <Description>Alt+Tab, grouped by kind of window</Description>
+    <!-- WinForms is here for NotifyIcon only; WPF owns the UI. -->
+    <NoWarn>WFO0003</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\altlane.ico" />
+    <Resource Include="Assets\altlane-paused.ico" />
+  </ItemGroup>
+
+</Project>
