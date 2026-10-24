@@ -92,6 +92,8 @@ static class N
     [DllImport("user32")] public static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
     [DllImport("kernel32", CharSet = CharSet.Unicode)] public static extern IntPtr GetModuleHandle(string? name);
     [DllImport("kernel32")] public static extern uint GetCurrentThreadId();
+    [DllImport("kernel32")] public static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32")] public static extern bool QueryThreadCycleTime(IntPtr thread, out ulong cycles);
     [DllImport("user32")] public static extern int GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
     [DllImport("user32")] public static extern bool TranslateMessage(ref MSG msg);
     [DllImport("user32")] public static extern IntPtr DispatchMessage(ref MSG msg);

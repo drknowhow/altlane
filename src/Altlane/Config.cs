@@ -31,6 +31,16 @@ sealed class Settings
     public string Layout { get; set; } = GridLayout;
     /// <summary>Win+Tab opens Altlane's lanes overview. Off leaves Win+Tab to Windows' Task View.</summary>
     public bool WinTabLanes { get; set; } = true;
+    /// <summary>Pointing at a card selects it in Alt+Tab too (the overview always does). Only real mouse movement counts.</summary>
+    public bool HoverSelects { get; set; } = true;
+    /// <summary>Each tab of a Windows Terminal window with several gets its own card.</summary>
+    public bool TerminalTabs { get; set; } = true;
+    /// <summary>Mark Claude Code sessions working or waiting for you, from Claude Code's status files.</summary>
+    public bool ClaudeStatus { get; set; } = true;
+    /// <summary>Sessions waiting for you go first in their group.</summary>
+    public bool NeedsFirst { get; set; }
+    /// <summary>Middle-click closes a window; dragging a card onto a group moves it there.</summary>
+    public bool MouseActions { get; set; } = true;
 
     public const string GridLayout = "grid", ColumnsLayout = "columns";
     [System.Text.Json.Serialization.JsonIgnore] public bool Columns => string.Equals(Layout, ColumnsLayout, StringComparison.OrdinalIgnoreCase);
@@ -68,7 +78,7 @@ sealed class RuleStore
     public Rules Current { get; private set; } = Rules.Parse(Rules.Default);
     public string? Error { get; private set; }
     /// <summary>Windows moved with Ctrl+number for as long as they're open, by group key.</summary>
-    public Dictionary<IntPtr, string> Moved { get; } = new();
+    public Dictionary<WinKey, string> Moved { get; } = new();
     public event Action? Changed;
 
     readonly Dispatcher _ui;
@@ -83,7 +93,8 @@ sealed class RuleStore
         {
             Directory.CreateDirectory(Paths.Root);
             if (!File.Exists(Paths.Rules)) File.WriteAllText(Paths.Rules, Rules.Default);
-            Current = Rules.Parse(File.ReadAllText(Paths.Rules));
+            string text = Upgrade(File.ReadAllText(Paths.Rules));
+            Current = Rules.Parse(text);
             Error = null;
             Log.Write("rules_loaded", new { groups = Current.Groups.Count, warnings = Current.Warnings });
         }
@@ -92,8 +103,29 @@ sealed class RuleStore
             Error = e.Message;
             Log.Write("rules_error", new { error = e.Message });
         }
-        foreach (var h in Moved.Keys.Where(h => !N.IsWindow(h)).ToList()) Moved.Remove(h);
+        foreach (var k in Moved.Keys.Where(k => !N.IsWindow(k.Hwnd)).ToList()) Moved.Remove(k);
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Brings the Claude Code title rule an earlier version wrote up to date: Claude Code now marks a
+    /// working terminal ◐ ◑, which the old pattern misses. Only the exact old text is replaced, and the
+    /// rest of the file is written back as it was.
+    /// </summary>
+    static string Upgrade(string text)
+    {
+        if (!text.Contains(Rules.OldClaudeTitle, StringComparison.Ordinal)) return text;
+        string up = text.Replace(Rules.OldClaudeTitle, Rules.ClaudeTitle, StringComparison.Ordinal)
+                        .Replace(Rules.OldClaudeWhy, Rules.ClaudeWhy, StringComparison.Ordinal);
+        try
+        {
+            string tmp = Paths.Rules + ".tmp";
+            File.WriteAllText(tmp, up);
+            File.Move(tmp, Paths.Rules, overwrite: true);
+            Log.Write("rules_upgraded", new { what = "claude_title_marks" });
+        }
+        catch (IOException e) { Log.Write("rules_upgrade_failed", new { error = e.Message }); }
+        return up;
     }
 
     public void Watch()
@@ -108,7 +140,7 @@ sealed class RuleStore
     }
 
     public Placement Place(WinInfo w) =>
-        Current.Place(w.Hwnd, new WinFacts(w.Title, w.Exe, w.AppId, Current.IsBrowser(w.Exe)), Moved);
+        Current.Place(WinKey.Of(w), new WinFacts(w.Title, w.Exe, w.AppId, Current.IsBrowser(w.Exe)), Moved);
 
     public WinFacts Facts(WinInfo w) => new(w.Title, w.Exe, w.AppId, Current.IsBrowser(w.Exe));
 }

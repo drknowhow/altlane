@@ -227,6 +227,9 @@ static partial class SelfTest
         var titles = new JsonArray();
         foreach (var (name, g) in HomeGroup)
             if (g != "other") titles.Add(new JsonObject { ["contains"] = TestWindows.Prefix + name, ["group"] = g });
+        titles.Add(new JsonObject { ["contains"] = TestWindows.Prefix + "tab", ["group"] = "term" }); // T16's Windows Terminal tabs
+        foreach (var g in TestWindows.BulkGroups) // T17's extra windows
+            if (g != "other") titles.Add(new JsonObject { ["contains"] = TestWindows.Prefix + "bulk " + g, ["group"] = g });
         var rules = new JsonObject
         {
             ["groups"] = defaults["groups"]!.DeepClone(),
@@ -237,6 +240,7 @@ static partial class SelfTest
         };
         _cfg = Path.Combine(_dir, "cfg");
         Directory.CreateDirectory(_cfg);
+        Directory.CreateDirectory(Path.Combine(_dir, "claude-sessions")); // T16's stand-in for Claude Code's status files
         File.WriteAllText(Path.Combine(_cfg, "rules.json"), rules.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         File.WriteAllText(Path.Combine(_cfg, "settings.json"), """{ "ShowDelayMs": 120, "SameGroupKey": true, "DirectJump": true }""");
     }
@@ -252,7 +256,7 @@ static partial class SelfTest
     {
         var ready = new EventWaitHandle(false, EventResetMode.ManualReset, TestWindows.ReadyEvent);
         ready.Reset();
-        _tw = Spawn(Environment.ProcessPath!, "testwindows", "--minutes", "12", "--log", Path.Combine(_dir, "testwindows.jsonl"));
+        _tw = Spawn(Environment.ProcessPath!, "testwindows", "--minutes", "14", "--log", Path.Combine(_dir, "testwindows.jsonl"));
         if (!ready.WaitOne(15000)) throw new AbortException("test windows never came up");
         var sw = Stopwatch.StartNew();
         while (sw.ElapsedMilliseconds < 5000)
@@ -270,11 +274,17 @@ static partial class SelfTest
         Log.Write("test_windows", new { pid = _tw.Id, found = W.Count });
     }
 
+    /// <summary>--theme dark|light for Altlane, instead of the Windows app theme.</summary>
+    static string? _theme;
+
     static void StartSwitcher(string app)
     {
         var ready = new EventWaitHandle(false, EventResetMode.ManualReset, ReadyEvent);
         ready.Reset();
-        _sw = Spawn(app, "--test", "--config-dir", _cfg, "--log", Path.Combine(_dir, "switcher.jsonl"), "--shot-dir", _dir, "--minutes", "10");
+        var args = new List<string> { "--test", "--config-dir", _cfg, "--log", Path.Combine(_dir, "switcher.jsonl"), "--shot-dir", _dir, "--minutes", "12",
+            "--claude-dir", Path.Combine(_dir, "claude-sessions") };
+        if (_theme != null) args.AddRange(new[] { "--theme", _theme });
+        _sw = Spawn(app, args.ToArray());
         if (!ready.WaitOne(20000)) throw new AbortException("Altlane never signalled ready");
         _overlay = Win.TopLevel().FirstOrDefault(h => Win.Pid(h) == _sw.Id && Win.Title(h) == "Altlane overlay");
         if (_overlay == IntPtr.Zero) throw new AbortException("Altlane's overlay window not found");
@@ -295,7 +305,7 @@ static partial class SelfTest
         }
         if (_tw != null && !_tw.HasExited)
         {
-            foreach (var h in W.Values) N.PostMessage(h, N.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            foreach (var (name, h) in W) if (name != "wt") N.PostMessage(h, N.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
             if (!_tw.WaitForExit(4000)) { Log.Write("killed", new { which = "testwindows" }); _tw.Kill(); }
         }
     }

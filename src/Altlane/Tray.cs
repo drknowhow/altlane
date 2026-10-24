@@ -11,7 +11,7 @@ sealed class Tray : IDisposable
     readonly ToolStripMenuItem _pause;
     readonly Icon _live, _paused;
 
-    public event Action? PauseClicked, SettingsClicked, RulesClicked, LogsClicked, QuitClicked;
+    public event Action? PauseClicked, SettingsClicked, UsageClicked, RulesClicked, LogsClicked, QuitClicked;
 
     public Tray(string version, bool elevated)
     {
@@ -23,6 +23,7 @@ sealed class Tray : IDisposable
         _pause = new ToolStripMenuItem("Pause", null, (_, _) => PauseClicked?.Invoke());
         menu.Items.Add(_pause);
         menu.Items.Add(new ToolStripMenuItem("Settings…", null, (_, _) => SettingsClicked?.Invoke()));
+        menu.Items.Add(new ToolStripMenuItem("Usage…", null, (_, _) => UsageClicked?.Invoke()));
         menu.Items.Add(new ToolStripMenuItem("Open rules", null, (_, _) => RulesClicked?.Invoke()));
         menu.Items.Add(new ToolStripMenuItem("Open log folder", null, (_, _) => LogsClicked?.Invoke()));
         menu.Items.Add(new ToolStripSeparator());

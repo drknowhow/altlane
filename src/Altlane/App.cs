@@ -21,6 +21,8 @@ namespace Altlane;
 ///   --admin-task install|remove|status|selfcheck [--user DOMAIN\name]
 ///   --list FILE                    write the windows and where the rules put them, then exit
 /// Test and diagnostic options: --test --config-dir DIR --log FILE --shot-dir DIR --minutes N --no-tray
+///   --claude-dir DIR (Claude Code's session folder; in --test there is none unless this is given)
+///   --theme dark|light (draw the overlay in this theme instead of following Windows)
 ///   --debug-drop-hook-after-s N
 /// Panic quit, from anywhere: Ctrl+Alt+Shift+Q.
 /// </summary>
@@ -35,6 +37,8 @@ static class App
     static ControlWindow? _ctl;
     static Tray? _tray;
     static SettingsWindow? _settingsWindow;
+    static UsageWindow? _usageWindow;
+    static Terminals? _terms;
     static Mutex? _instance;
     static int _quitting, _crashes;
 
@@ -46,6 +50,7 @@ static class App
         var o = Parse(args);
         if (o.TryGetValue("config-dir", out var dir)) Paths.Use(dir);
         bool test = o.ContainsKey("test");
+        if (test && o.TryGetValue("theme", out var theme)) Overlay.ThemeOverride = theme;
 
         if (o.ContainsKey("quit")) return QuitRunning(test);
         if (o.TryGetValue("admin-task", out var action))
@@ -141,6 +146,7 @@ static class App
         };
         AppDomain.CurrentDomain.UnhandledException += (_, e) => { Log.Write("fatal", new { error = e.ExceptionObject.ToString() }); Log.Flush(); };
 
+        if (!Activator.NoThrottling()) Log.Write("throttling_opt_out_failed", new { error = Marshal.GetLastWin32Error() });
         var settings = Settings.Load();
         var rules = new RuleStore(_app.Dispatcher);
         rules.Load();
@@ -148,9 +154,20 @@ static class App
 
         var ov = new Overlay();
         var wt = new WindowTracker(test ? "Altlane test" : null, exe => rules.Current.IsBrowser(exe));
-        var ctl = new SwitchController(ov, wt, rules, settings, test) { ShotDir = o.GetValueOrDefault("shot-dir") };
+        // Claude Code's status files. The self-test brings its own folder, so it never reads the real one.
+        string? sessionsDir = test ? o.GetValueOrDefault("claude-dir") : Terminals.DefaultSessionsDir;
+        var terms = _terms = new Terminals(_app.Dispatcher, settings.ClaudeStatus ? sessionsDir : null);
+        terms.Source(() => Win.TopLevel()
+            .Where(h => Win.Class(h) == "CASCADIA_HOSTING_WINDOW_CLASS" && (!test || Win.Title(h).StartsWith("Altlane test", StringComparison.Ordinal)))
+            .ToList());
+        terms.Refresh();
+        var ctl = new SwitchController(ov, wt, rules, settings, test, terms) { ShotDir = o.GetValueOrDefault("shot-dir") };
         var hook = _hook = new KeyboardHook(_app.Dispatcher, ctl.OnHook);
-        void ApplySettings() { hook.SameGroupKey = settings.SameGroupKey; hook.DirectJump = settings.DirectJump; hook.WinTab = settings.WinTabLanes; }
+        void ApplySettings()
+        {
+            hook.SameGroupKey = settings.SameGroupKey; hook.DirectJump = settings.DirectJump; hook.WinTab = settings.WinTabLanes;
+            terms.Sessions(settings.ClaudeStatus ? sessionsDir : null);
+        }
         ApplySettings();
         ctl.Attach(hook);
         hook.Start();
@@ -181,7 +198,7 @@ static class App
             _settingsWindow = new SettingsWindow(settings, rules, Version, () => { settings.Save(); ApplySettings(); })
             {
                 TurnOnAdmin = TurnOnAdmin, TurnOffAdmin = TurnOffAdmin,
-                OpenRules = () => Open(Paths.Rules), OpenLogs = () => Open(Paths.Logs),
+                OpenRules = () => Open(Paths.Rules), OpenLogs = () => Open(Paths.Logs), OpenUsage = () => ShowUsage(),
                 QuitApp = () => Quit("settings_quit"),
             };
             _settingsWindow.Closed += (_, _) => _settingsWindow = null;
@@ -189,6 +206,16 @@ static class App
             _settingsWindow.Activate();
         }
         _ctl.SettingsRequested += ShowSettings;
+
+        void ShowUsage()
+        {
+            if (_usageWindow != null) { _usageWindow.Activate(); return; }
+            _usageWindow = new UsageWindow(Usage.Read(Paths.Logs, days: 7), settings, rules.Current.Groups);
+            _usageWindow.Closed += (_, _) => _usageWindow = null;
+            _usageWindow.Show();
+            _usageWindow.Activate();
+        }
+        _ctl.UsageRequested += ShowUsage;
 
         if (!test && !o.ContainsKey("no-tray"))
         {
@@ -201,6 +228,7 @@ static class App
                 Log.Write("paused", new { on = hook.Paused });
             };
             tray.SettingsClicked += ShowSettings;
+            tray.UsageClicked += ShowUsage;
             tray.RulesClicked += () => Open(Paths.Rules);
             tray.LogsClicked += () => Open(Paths.Logs);
             tray.QuitClicked += () => Quit("tray_quit");
@@ -251,6 +279,8 @@ static class App
         Log.Write("exit", new { why });
         _tray?.Dispose();
         _settingsWindow?.Close();
+        _usageWindow?.Close();
+        _terms?.Dispose();
         _ctl?.Dispose();
         _app?.Shutdown();
     }

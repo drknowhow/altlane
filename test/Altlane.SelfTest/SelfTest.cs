@@ -49,6 +49,8 @@ static partial class SelfTest
         Log.Init(Path.Combine(_dir, "driver.jsonl"), "driver");
 
         string? app = o.GetValueOrDefault("app") ?? FindApp();
+        _theme = o.GetValueOrDefault("theme");
+        _only = o.GetValueOrDefault("only")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         string? refuse = app == null || !File.Exists(app) ? "Altlane.exe not found: build src/Altlane in Release, or pass --app" : Refusal();
         if (refuse != null) { Log.Write("refused", new { why = refuse }); Log.Flush(); return 4; }
 
@@ -78,6 +80,10 @@ static partial class SelfTest
             Phase("T9_close", T9);
             Phase("T10_watchdog", T10);
             Phase("T11_win_tab_lanes", T11);
+            Phase("T14_mouse_and_picks", T14);
+            Phase("T15_drag_and_middle_click", T15);
+            Phase("T16_terminal_tabs", T16);
+            Phase(ManyPhase, T17);
             Phase("T12_start_open", T12);
             Phase("C_detector_controls", Controls); // last: Start can hold the foreground for a while after it closes
         }
@@ -747,7 +753,8 @@ static partial class SelfTest
     }
 
     /// <summary>Move the cursor onto a window's card, from where Altlane says it drew it. True when it got there.</summary>
-    static bool PointAt(IntPtr h, List<JsonElement> seen)
+    /// <param name="tab">A terminal tab's card: its tab index.</param>
+    static bool PointAt(IntPtr h, List<JsonElement> seen, int? tab = null)
     {
         var sw = Stopwatch.StartNew();
         JsonElement card = default;
@@ -756,7 +763,7 @@ static partial class SelfTest
             seen.AddRange(Tail());
             var v = seen.LastOrDefault(e => Ev(e) == "view");
             if (v.ValueKind == JsonValueKind.Object && v.TryGetProperty("cards", out var cards) && cards.ValueKind == JsonValueKind.Array)
-                card = cards.EnumerateArray().FirstOrDefault(c => c.GetProperty("hwnd").GetInt64() == h.ToInt64());
+                card = cards.EnumerateArray().FirstOrDefault(c => c.GetProperty("hwnd").GetInt64() == h.ToInt64() && (tab == null || c.GetProperty("tab").GetInt32() == tab));
             if (card.ValueKind != JsonValueKind.Object) Pause(30);
         }
         if (card.ValueKind != JsonValueKind.Object) return false;
@@ -906,8 +913,12 @@ static partial class SelfTest
         Log.Write("step", new { data });
     }
 
+    /// <summary>--only T17,T11: run just the phases whose names start with these (and T0's calibration). The verdict is then NO-GO.</summary>
+    static string[]? _only;
+
     static void Phase(string name, Action body)
     {
+        if (_only != null && !name.StartsWith("T0_") && !_only.Any(p => name.StartsWith(p + "_", StringComparison.Ordinal))) return;
         double t0 = Clock.Unix;
         Log.Write("phase_start", new { name });
         try { body(); }

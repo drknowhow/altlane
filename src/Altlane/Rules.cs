@@ -17,6 +17,12 @@ enum RuleLevel { Window, Hide, Title, WebApp, Site, App, Browser, Other }
 /// <summary>What a window looks like to the rules.</summary>
 sealed record WinFacts(string Title, string Exe, string? AppId, bool IsBrowser);
 
+/// <summary>A window, or one Windows Terminal tab of it by its title without the status mark, as Ctrl+number remembers it.</summary>
+readonly record struct WinKey(IntPtr Hwnd, string? Tab)
+{
+    public static WinKey Of(WinInfo w) => new(w.Hwnd, w.Tab == null ? null : Terminals.Bare(w.Tab.Name));
+}
+
 /// <param name="Group">null when a hide rule matched.</param>
 /// <param name="Why">One sentence for the overlay footer.</param>
 sealed record Placement(Group? Group, RuleLevel Level, string Why);
@@ -128,11 +134,12 @@ sealed class Rules
     /// <summary>"Chrome" and "chrome.exe" both mean chrome.exe.</summary>
     static string Exe(string s) => s.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? s : s + ".exe";
 
+    /// <param name="key">What <paramref name="moved"/> knows the window by: its handle, or a terminal tab's <see cref="WinKey"/>.</param>
     /// <param name="moved">Windows moved with Ctrl+number that can't be stated as a lasting rule, by group
     /// key. Kept outside the rules so a reload of rules.json doesn't drop them.</param>
-    public Placement Place(IntPtr hwnd, WinFacts w, IReadOnlyDictionary<IntPtr, string>? moved = null)
+    public Placement Place<TKey>(TKey key, WinFacts w, IReadOnlyDictionary<TKey, string>? moved = null) where TKey : notnull
     {
-        if (moved != null && moved.TryGetValue(hwnd, out var key) && ByKey(key) is Group wg)
+        if (moved != null && moved.TryGetValue(key, out var gkey) && ByKey(gkey) is Group wg)
             return new(wg, RuleLevel.Window, $"You moved this window here with Ctrl+{wg.Num}. It stays here until it closes.");
 
         foreach (var h in _hide)
@@ -222,6 +229,20 @@ sealed class Rules
         catch (IOException e) { return "rules.json couldn't be written (" + e.Message + ")"; }
     }
 
+    /// <summary>
+    /// The Claude Code title rule as earlier versions wrote it into rules.json, and as it reads now that
+    /// Claude Code marks a working terminal ◐ ◑. Both as JSON text: RuleStore swaps the first for the
+    /// second where the file still has it exactly, and leaves a pattern the user changed alone.
+    /// </summary>
+    public const string OldClaudeTitle = """
+"match": "^[\\u2733\\u2800-\\u28FF] ",
+""";
+    public const string ClaudeTitle = """
+"match": "^[\\u2733\\u25D0-\\u25D3\\u2800-\\u28FF] ",
+""";
+    public const string OldClaudeWhy = "(✳ when idle, a spinner while it works)";
+    public const string ClaudeWhy = "(✳ when idle, ◐ ◑ or a spinner while it works)";
+
     /// <summary>The rules a new install starts with.</summary>
     public const string Default = """
 {
@@ -237,9 +258,9 @@ sealed class Rules
   ],
   "titles": [
     {
-      "match": "^[\\u2733\\u2800-\\u28FF] ",
+      "match": "^[\\u2733\\u25D0-\\u25D3\\u2800-\\u28FF] ",
       "group": "agents",
-      "why": "The title starts with the mark Claude Code puts on its terminal (✳ when idle, a spinner while it works), so it counts as an agent."
+      "why": "The title starts with the mark Claude Code puts on its terminal (✳ when idle, ◐ ◑ or a spinner while it works), so it counts as an agent."
     }
   ],
   "sites": [

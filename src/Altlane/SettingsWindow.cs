@@ -22,7 +22,7 @@ sealed class SettingsWindow : Window
     readonly Button _adminButton;
 
     public Func<bool>? TurnOnAdmin, TurnOffAdmin;
-    public Action? OpenRules, OpenLogs, QuitApp;
+    public Action? OpenRules, OpenLogs, OpenUsage, QuitApp;
 
     public SettingsWindow(Settings s, RuleStore rules, string version, Action changed)
     {
@@ -72,12 +72,25 @@ sealed class SettingsWindow : Window
         root.Children.Add(delayRow);
         root.Children.Add(Note("A quick Alt+Tab released before this switches back without drawing anything.", indent: false));
 
+        root.Children.Add(Head("Terminals and Claude Code"));
+        root.Children.Add(Check("Show each Windows Terminal tab as its own card", s.TerminalTabs, v => s.TerminalTabs = v));
+        root.Children.Add(Note("The tab in front shows a live picture. Other tabs show their name, since Windows only draws the tab in front. Switching to one selects that tab.", indent: true));
+        root.Children.Add(Check("Mark Claude Code sessions that are working or waiting for you", s.ClaudeStatus, v => s.ClaudeStatus = v));
+        root.Children.Add(Note(@"Reads the status files Claude Code keeps in your user folder (.claude\sessions). Nothing is sent anywhere.", indent: true));
+        root.Children.Add(Check("List sessions waiting for you first in their group", s.NeedsFirst, v => s.NeedsFirst = v));
+
+        root.Children.Add(Head("Mouse"));
+        root.Children.Add(Check("Pointing at a card selects it in Alt+Tab too", s.HoverSelects, v => s.HoverSelects = v));
+        root.Children.Add(Note("Only when the mouse moves, so a view that opens under a still pointer keeps its keyboard selection. Win+Tab's overview always works this way.", indent: true));
+        root.Children.Add(Check("Middle-click closes a window; drag a card onto a group to move it there", s.MouseActions, v => s.MouseActions = v));
+
         root.Children.Add(Head("Groups and rules"));
         _rulesText = Note("", indent: false);
         root.Children.Add(_rulesText);
         var ruleButtons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 8, 0, 0) };
         ruleButtons.Children.Add(Btn("Open rules.json", () => OpenRules?.Invoke()));
         ruleButtons.Children.Add(Btn("Open log folder", () => OpenLogs?.Invoke()));
+        ruleButtons.Children.Add(Btn("Usage…", () => OpenUsage?.Invoke()));
         root.Children.Add(ruleButtons);
 
         root.Children.Add(Head("Starting"));
@@ -102,7 +115,8 @@ sealed class SettingsWindow : Window
         bottom.Children.Add(close);
         root.Children.Add(bottom);
 
-        Content = root;
+        Content = new ScrollViewer { Content = root, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        MaxHeight = SystemParameters.WorkArea.Height - 40;
         _rules.Changed += ShowRules;
         Closed += (_, _) => _rules.Changed -= ShowRules;
         ShowRules();

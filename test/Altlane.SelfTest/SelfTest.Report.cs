@@ -17,8 +17,12 @@ static partial class SelfTest
         var tw = ReadJsonl(Path.Combine(_dir, "testwindows.jsonl"));
 
         // Alt+Tab's pane and Win+Tab's full-screen overview have their own targets.
-        var composedAlt = sw.Where(e => Ev(e) == "overlay_composed" && !Lanes(e)).ToList();
-        var composedLanes = sw.Where(e => Ev(e) == "overlay_composed" && Lanes(e)).ToList();
+        // T17's busy desktop has its own numbers, so these stay comparable with earlier runs.
+        bool Many(JsonElement e) => PhaseAt(e.GetProperty("t").GetDouble()) == ManyPhase;
+        var composedAlt = sw.Where(e => Ev(e) == "overlay_composed" && !Lanes(e) && !Many(e)).ToList();
+        var composedLanes = sw.Where(e => Ev(e) == "overlay_composed" && Lanes(e) && !Many(e)).ToList();
+        double[] showMany = Nums(sw.Where(e => Ev(e) == "overlay_composed" && !Lanes(e) && Many(e)).ToList(), "overlay_composed", "show_ms");
+        double[] showManyLanes = Nums(sw.Where(e => Ev(e) == "overlay_composed" && Lanes(e) && Many(e)).ToList(), "overlay_composed", "show_ms");
         double[] show = Nums(composedAlt, "overlay_composed", "show_ms"), fromKey = Nums(composedAlt, "overlay_composed", "from_key_ms");
         double[] showLanes = Nums(composedLanes, "overlay_composed", "show_ms"), fromKeyLanes = Nums(composedLanes, "overlay_composed", "from_key_ms");
         var activations = sw.Where(e => Ev(e) is "switch" or "direct" && Str(e, "method") != null).ToList();
@@ -56,7 +60,8 @@ static partial class SelfTest
         var t10 = Rows.FirstOrDefault(r => r["test"] is "T10" && r.GetValueOrDefault("what") is "reinstall");
         var t11 = Rows.Where(r => r["test"] is "T11").ToList();
         var tv = Rows.Where(r => r["test"] is "T11tv").ToList();
-        string[] shots = { "alt-tab", "columns", "same-group", "filter", "regroup", "lanes", "lanes-filter" };
+        bool All(string test, int n) { var rs = Rows.Where(r => r["test"] as string == test).ToList(); return rs.Count == n && rs.All(r => r["ok"] is true); }
+        string[] shots = { "alt-tab", "columns", "same-group", "filter", "regroup", "lanes", "lanes-filter", "drag", "tabs" };
 
         var criteria = new Dictionary<string, bool>
         {
@@ -65,11 +70,16 @@ static partial class SelfTest
             ["no_key_leaks (T1-T11)"] = !counted.Any(s => s.ev is "leak_key" or "leak_char"),
             ["overlay_p95_le_50ms (Alt+Tab)"] = show.Length > 0 && Pct(show, 0.95) <= 50,
             ["lanes_p95_le_100ms (Win+Tab)"] = showLanes.Length > 0 && Pct(showLanes, 0.95) <= 100,
+            ["busy_desktop_alt_tab_p95_le_50ms (T17, 30 more windows)"] = showMany.Length >= 12 && Pct(showMany, 0.95) <= 50,
+            ["busy_desktop_win_tab_p95_le_100ms (T17)"] = showManyLanes.Length >= 6 && Pct(showManyLanes, 0.95) <= 100,
             ["every_switch_landed"] = switchRows.Count > 0 && landed == switchRows.Count,
             ["every_step_passed (views, sections, logs)"] = steps.Count > 0 && steps.All(r => r["ok"] is true),
             ["watchdog_reinstalls_dropped_hook"] = t10?["ok"] is true,
             ["win_tab_opens_lanes (T11, 16 steps)"] = t11.Count == 16 && t11.All(r => r["ok"] is true),
             ["task_view_still_reachable (Shift+Win+Tab, setting off)"] = tv.Count == 4 && tv.All(r => r["ok"] is true),
+            ["hover_in_alt_tab_and_pick_logged (T14, 4 steps)"] = All("T14", 4),
+            ["drag_regroups_and_middle_click_closes (T15, 2 steps)"] = All("T15", 2),
+            ["terminal_tabs_marks_select_close (T16, 3 steps)"] = All("T16", 3),
             ["no_crashes"] = crashes == 0,
             ["detectors_proven (stray key leaks, lone Alt opens menu, lone Win opens Start)"] = controlsFired,
         };
@@ -85,6 +95,8 @@ static partial class SelfTest
             ["overlay_show_ms"] = new { n = show.Length, p50 = Pct(show, 0.5), p95 = Pct(show, 0.95), max = show.DefaultIfEmpty().Max() },
             ["overlay_from_key_ms"] = new { p50 = Pct(fromKey, 0.5), p95 = Pct(fromKey, 0.95) },
             ["lanes_show_ms"] = new { n = showLanes.Length, p50 = Pct(showLanes, 0.5), p95 = Pct(showLanes, 0.95), max = showLanes.DefaultIfEmpty().Max() },
+            ["busy_alt_tab_show_ms"] = new { n = showMany.Length, p50 = Pct(showMany, 0.5), p95 = Pct(showMany, 0.95), max = showMany.DefaultIfEmpty().Max() },
+            ["busy_win_tab_show_ms"] = new { n = showManyLanes.Length, p50 = Pct(showManyLanes, 0.5), p95 = Pct(showManyLanes, 0.95), max = showManyLanes.DefaultIfEmpty().Max() },
             ["lanes_from_key_ms"] = new { p50 = Pct(fromKeyLanes, 0.5), p95 = Pct(fromKeyLanes, 0.95) },
             ["hook"] = hook.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<object>(hook.GetRawText()) : null,
             ["switcher_elevated"] = ready.ValueKind == JsonValueKind.Object ? ready.GetProperty("elevated").ToString() : null,

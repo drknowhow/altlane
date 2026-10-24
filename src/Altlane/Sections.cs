@@ -10,8 +10,14 @@ sealed record Item(WinInfo W, Placement P, bool IsCurrent);
 /// <param name="Num">The group's number key; null for the Recent row.</param>
 sealed record Section(string Key, string Label, int? Num, string Color, List<Item> Items);
 
-/// <summary>One card in reading order. The same window can appear twice: in Recent and in its group.</summary>
-readonly record struct Slot(string Section, IntPtr Hwnd);
+/// <summary>One card in reading order. The same window can appear twice: in Recent and in its group.
+/// Tab is the Windows Terminal tab's index when the window's tabs have a card each, else -1.</summary>
+readonly record struct Slot(string Section, IntPtr Hwnd, int Tab = -1)
+{
+    public static Slot Of(string section, Item it) => new(section, it.W.Hwnd, it.W.Tab?.Index ?? -1);
+    /// <summary>The same card, whichever section it is in.</summary>
+    public bool SameCard(Slot o) => Hwnd == o.Hwnd && Tab == o.Tab;
+}
 
 /// <summary>
 /// Alt+Tab's sections, from windows in MRU order, and how the keys move between them. The grid and the
@@ -26,7 +32,8 @@ static class Sections
     /// first and marked IsCurrent; when the desktop or a tool window has focus, none is.</param>
     /// <param name="only">Alt+` scope: just this group, and no Recent row.</param>
     /// <param name="recent">False for Win+Tab's overview, where each window appears once, in its group.</param>
-    public static List<Section> Build(IReadOnlyList<Item> mru, IReadOnlyList<Group> groups, string filter, string? only = null, bool recent = true)
+    /// <param name="needsFirst">Claude Code sessions waiting for you go first in their group.</param>
+    public static List<Section> Build(IReadOnlyList<Item> mru, IReadOnlyList<Group> groups, string filter, string? only = null, bool recent = true, bool needsFirst = false)
     {
         var q = filter.Trim();
         bool Matches(Item it) => q.Length == 0
@@ -36,13 +43,15 @@ static class Sections
         if (q.Length == 0 && only == null && recent)
         {
             int skip = mru.Count > 0 && mru[0].IsCurrent ? 1 : 0;
-            var rec = mru.Skip(skip).Take(RecentCount).ToList();
+            // Recent is windows: a terminal tab that isn't in front has no recency of its own.
+            var rec = mru.Skip(skip).Where(it => !it.W.HiddenTab).Take(RecentCount).ToList();
             if (rec.Count > 0) outp.Add(new Section(RecentKey, "Recent", null, "", rec));
         }
         foreach (var g in groups)
         {
             if (only != null && g.Key != only) continue;
             var items = mru.Where(it => it.P.Group == g && Matches(it)).ToList();
+            if (needsFirst) items = items.OrderBy(it => it.W.Agent?.State == "needs" ? 0 : 1).ToList(); // stable: MRU order otherwise
             if (items.Count > 0) outp.Add(new Section(g.Key, g.Name, g.Num, g.Color, items));
         }
         return outp;
@@ -50,7 +59,7 @@ static class Sections
 
     static string Exe(string exe) => exe.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? exe[..^4] : exe;
 
-    public static List<Slot> Flat(List<Section> secs) => secs.SelectMany(s => s.Items.Select(it => new Slot(s.Key, it.W.Hwnd))).ToList();
+    public static List<Slot> Flat(List<Section> secs) => secs.SelectMany(s => s.Items.Select(it => Slot.Of(s.Key, it))).ToList();
 
     public static int IndexOf(List<Slot> flat, Slot? sel) => sel is Slot s ? flat.IndexOf(s) : -1;
 
@@ -70,7 +79,7 @@ static class Sections
         if (secs.Count == 0) return null;
         int k = sel is Slot s ? secs.FindIndex(x => x.Key == s.Section) : -1;
         k = k < 0 ? (d > 0 ? 0 : secs.Count - 1) : ((k + d) % secs.Count + secs.Count) % secs.Count;
-        return new Slot(secs[k].Key, secs[k].Items[0].W.Hwnd);
+        return Slot.Of(secs[k].Key, secs[k].Items[0]);
     }
 
     /// <summary>Columns layout, ↑ ↓: the card above or below in the same column, stopping at its ends.</summary>
@@ -78,9 +87,9 @@ static class Sections
     {
         if (secs.Count == 0) return null;
         var (k, j) = Locate(secs, sel);
-        if (k < 0) return new Slot(secs[0].Key, secs[0].Items[0].W.Hwnd);
+        if (k < 0) return Slot.Of(secs[0].Key, secs[0].Items[0]);
         var items = secs[k].Items;
-        return new Slot(secs[k].Key, items[Math.Clamp(j + d, 0, items.Count - 1)].W.Hwnd);
+        return Slot.Of(secs[k].Key, items[Math.Clamp(j + d, 0, items.Count - 1)]);
     }
 
     /// <summary>
@@ -94,7 +103,7 @@ static class Sections
         if (k < 0) (k, j) = (d > 0 ? 0 : secs.Count - 1, 0);
         else k = ((k + d) % secs.Count + secs.Count) % secs.Count;
         var items = secs[k].Items;
-        return new Slot(secs[k].Key, items[Math.Min(j, items.Count - 1)].W.Hwnd);
+        return Slot.Of(secs[k].Key, items[Math.Min(j, items.Count - 1)]);
     }
 
     /// <summary>Section and row of a card, or (-1, -1) when it isn't in view.</summary>
@@ -102,7 +111,7 @@ static class Sections
     {
         if (sel is not Slot s) return (-1, -1);
         int k = secs.FindIndex(x => x.Key == s.Section);
-        int j = k < 0 ? -1 : secs[k].Items.FindIndex(it => it.W.Hwnd == s.Hwnd);
+        int j = k < 0 ? -1 : secs[k].Items.FindIndex(it => Slot.Of(s.Section, it) == s);
         return j < 0 ? (-1, -1) : (k, j);
     }
 
@@ -110,15 +119,15 @@ static class Sections
     public static Slot? Group(List<Section> secs, int n)
     {
         var s = secs.FirstOrDefault(x => x.Num == n);
-        return s == null ? null : new Slot(s.Key, s.Items[0].W.Hwnd);
+        return s == null ? null : Slot.Of(s.Key, s.Items[0]);
     }
 
     public static Item? ItemAt(List<Section> secs, Slot? sel) =>
-        sel is Slot s ? secs.FirstOrDefault(x => x.Key == s.Section)?.Items.FirstOrDefault(it => it.W.Hwnd == s.Hwnd) : null;
+        sel is Slot s ? secs.FirstOrDefault(x => x.Key == s.Section)?.Items.FirstOrDefault(it => Slot.Of(s.Section, it) == s) : null;
 
     /// <summary>
     /// Alt+number: the most recent window in that group, skipping the one in front so pressing it
     /// again from inside the group moves on.
     /// </summary>
-    public static Item? Direct(IReadOnlyList<Item> mru, Group g) => mru.Where(it => it.P.Group == g && !it.IsCurrent).FirstOrDefault();
+    public static Item? Direct(IReadOnlyList<Item> mru, Group g) => mru.Where(it => it.P.Group == g && !it.IsCurrent && !it.W.HiddenTab).FirstOrDefault();
 }

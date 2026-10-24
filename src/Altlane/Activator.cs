@@ -16,17 +16,19 @@ static class Activator
     [DllImport("winmm")] public static extern uint timeEndPeriod(uint ms);
 
     [StructLayout(LayoutKind.Sequential)] struct PowerThrottlingState { public uint Version, ControlMask, StateMask; }
-    [DllImport("kernel32")] static extern bool SetProcessInformation(IntPtr process, int infoClass, ref PowerThrottlingState info, uint size);
+    [DllImport("kernel32", SetLastError = true)] static extern bool SetProcessInformation(IntPtr process, int infoClass, ref PowerThrottlingState info, uint size);
     [DllImport("kernel32")] static extern IntPtr GetCurrentProcess();
 
     /// <summary>
-    /// Windows 11 ignores timeBeginPeriod in a process with no visible window, which is Altlane between
-    /// switches, so each 2 ms sleep in Verify took a 15.6 ms tick. This is the documented opt-out.
+    /// Altlane has no visible window between switches, so Windows 11 treats it as a background process.
+    /// It then ignores timeBeginPeriod, so each 2 ms sleep in Verify took a 15.6 ms tick, and it may run
+    /// the process at efficiency speed (EcoQoS: slower clocks, efficiency cores), which the first view
+    /// after a pause pays for. Opting out of both is documented; Altlane idles between switches either way.
     /// </summary>
-    static Activator()
+    public static bool NoThrottling()
     {
-        var s = new PowerThrottlingState { Version = 1, ControlMask = 0x4 /* IGNORE_TIMER_RESOLUTION */, StateMask = 0 };
-        SetProcessInformation(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, ref s, (uint)Marshal.SizeOf<PowerThrottlingState>());
+        var s = new PowerThrottlingState { Version = 1, ControlMask = 0x1 /* EXECUTION_SPEED */ | 0x4 /* IGNORE_TIMER_RESOLUTION */, StateMask = 0 };
+        return SetProcessInformation(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, ref s, (uint)Marshal.SizeOf<PowerThrottlingState>());
     }
 
     public readonly record struct Result(bool Ok, string Method, double Ms, bool WasMinimized);

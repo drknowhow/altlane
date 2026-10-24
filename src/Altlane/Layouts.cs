@@ -64,7 +64,7 @@ static class Layouts
                     for (int j = 0; j < s.Items.Count; j++)
                     {
                         int line = j / perLine, col = j % perLine;
-                        cards.Add(new CardPos(new Slot(s.Key, s.Items[j].W.Hwnd), s.Items[j],
+                        cards.Add(new CardPos(Slot.Of(s.Key, s.Items[j]), s.Items[j],
                             x + col * (cw + CardGap), y + HeadH + HeadGap + line * (cardH + CardGap)));
                     }
                     x += sizes[i].w + SecGapX;
@@ -108,7 +108,7 @@ static class Layouts
                 var s = secs[i];
                 heads.Add(new HeadPos(s, x, 0, widths[i]));
                 for (int j = 0; j < s.Items.Count; j++)
-                    cards.Add(new CardPos(new Slot(s.Key, s.Items[j].W.Hwnd), s.Items[j],
+                    cards.Add(new CardPos(Slot.Of(s.Key, s.Items[j]), s.Items[j],
                         x + j / fit * (cw + CardGap), HeadH + HeadGap + j % fit * (cardH + CardGap)));
                 int rows = Math.Min(s.Items.Count, fit);
                 height = Math.Max(height, HeadH + HeadGap + rows * cardH + (rows - 1) * CardGap);
@@ -137,5 +137,17 @@ static class Layouts
         double laneH = footY - 14 - LanePad - LanesTop;
         var L = Columns(secs, workW - 2 * LanesSide - 2 * LanePad, laneH, LaneGapX);
         return new Overview(L, Math.Round((workW - L.width) / 2), LanesTop, laneH, footY);
+    }
+
+    /// <summary>
+    /// Where the overlay's top-left corner goes, in physical pixels: centered in a monitor's work area, or
+    /// near its bottom for a toast. The work area can start left of or above the primary monitor. A window
+    /// bigger than the work area keeps its top-left corner on that monitor.
+    /// </summary>
+    public static (int x, int y) Center(int left, int top, int workW, int workH, int w, int h, double scale, bool bottom)
+    {
+        int x = left + (workW - w) / 2;
+        int y = bottom ? top + workH - h - (int)Math.Round(72 * scale) : top + (workH - h) / 2;
+        return (Math.Max(left, x), Math.Max(top, y));
     }
 }

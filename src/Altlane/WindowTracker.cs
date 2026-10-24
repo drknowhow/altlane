@@ -9,7 +9,14 @@ namespace Altlane;
 /// <param name="Exe">File name with extension, e.g. "chrome.exe": what rules match on.</param>
 /// <param name="AppName">The file description, e.g. "Google Chrome": what the filter also matches.</param>
 /// <param name="AppId">Explicit AppUserModelID; only looked up for browsers, where it marks installed web apps.</param>
-sealed record WinInfo(IntPtr Hwnd, string Title, string Exe, string AppName, string? ExePath, string? AppId, bool Minimized);
+/// <param name="Tab">Set when this is one tab of a Windows Terminal window with several; Title is then the tab's.</param>
+/// <param name="Agent">The Claude Code session this window or tab shows, from Claude Code's status files.</param>
+sealed record WinInfo(IntPtr Hwnd, string Title, string Exe, string AppName, string? ExePath, string? AppId, bool Minimized,
+    TermTab? Tab = null, AgentInfo? Agent = null)
+{
+    /// <summary>A tab that isn't the one in front: Windows draws no picture of it.</summary>
+    public bool HiddenTab => Tab is { Selected: false };
+}
 
 /// <summary>
 /// Alt+Tab-eligible windows in most-recently-used order. The order is seeded from Z-order at start

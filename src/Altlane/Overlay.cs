@@ -4,10 +4,13 @@ using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Effects;
+using System.Windows.Shapes;
 using System.Windows.Threading;
 using static Altlane.Layouts;
 
@@ -26,12 +29,20 @@ enum ViewKind { Grid, Columns, Lanes }
 /// </summary>
 sealed class Overlay : Window
 {
-    sealed record Theme(Brush Pane, Brush Ink, Brush Muted, Brush Edge, Brush CardHi, Brush Accent, Brush ThumbBg, Brush Badge, Brush Lane);
+    /// <param name="Needs">Claude Code waiting for you: text, and the pill behind it.</param>
+    /// <param name="Work">Claude Code working.</param>
+    sealed record Theme(Brush Pane, Brush Ink, Brush Muted, Brush Edge, Brush CardHi, Brush Accent, Brush ThumbBg, Brush Badge, Brush Lane,
+        Brush Needs, Brush NeedsBg, Brush Work, Brush WorkBg);
 
     static readonly Theme Dark = new(B(0x26, 0x28, 0x2B), B(0xF2, 0xF2, 0xF2), B(0xA6, 0xAF, 0xB8), B(0x3A, 0x3D, 0x41),
-        B(0x34, 0x37, 0x3B), B(0x60, 0xCD, 0xFF), B(0x1C, 0x1E, 0x21), B(0x31, 0x33, 0x37), B(0x2C, 0x2E, 0x32));
+        B(0x34, 0x37, 0x3B), B(0x60, 0xCD, 0xFF), B(0x1C, 0x1E, 0x21), B(0x31, 0x33, 0x37), B(0x2C, 0x2E, 0x32),
+        B(0xF3, 0xB4, 0x4A), B(0x4A, 0x36, 0x13), B(0x7D, 0xB0, 0xFF), B(0x1D, 0x32, 0x54));
     static readonly Theme Light = new(B(0xF1, 0xF3, 0xF5), B(0x1B, 0x1F, 0x23), B(0x5D, 0x68, 0x72), B(0xD5, 0xD9, 0xDD),
-        B(0xE1, 0xE5, 0xE9), B(0x00, 0x5F, 0xB8), B(0xE4, 0xE8, 0xEB), B(0xE4, 0xE8, 0xEB), B(0xE8, 0xEB, 0xEE));
+        B(0xE1, 0xE5, 0xE9), B(0x00, 0x5F, 0xB8), B(0xE4, 0xE8, 0xEB), B(0xE4, 0xE8, 0xEB), B(0xE8, 0xEB, 0xEE),
+        B(0xB8, 0x6E, 0x00), B(0xFB, 0xE7, 0xC4), B(0x1F, 0x63, 0xC9), B(0xDB, 0xE8, 0xFB));
+
+    /// <summary>Self-test: draw in this theme instead of following Windows ("dark" or "light").</summary>
+    public static string? ThemeOverride;
     static readonly FontFamily Ui = new("Segoe UI Variable Text, Segoe UI"), Mono = new("Cascadia Mono, Consolas"),
         Glyphs = new("Segoe Fluent Icons, Segoe MDL2 Assets");
 
@@ -39,7 +50,19 @@ sealed class Overlay : Window
 
     readonly Canvas _canvas = new();
     readonly Dictionary<Slot, Border> _cards = new();
+    readonly Dictionary<Slot, Item> _cardItems = new();
+    /// <summary>
+    /// Cards from recent views, reused while nothing they show has changed. With dozens of windows,
+    /// building and measuring the cards was most of a view's time; a reused card keeps its measured
+    /// layout. Keyed by everything a card draws, and pruned when the overlay hides.
+    /// </summary>
+    readonly Dictionary<CardKey, (Border card, int session)> _cardCache = new();
+    readonly record struct CardKey(Slot Slot, Item Item, double Cw, double ThumbH, Theme T, string? Ago);
+    int _session;
     readonly List<IntPtr> _thumbs = new();
+    readonly Dictionary<Slot, IntPtr> _thumbOf = new();
+    // Where a dragged card can be dropped: each group's column, lane or block, in canvas DIPs.
+    readonly List<(Group g, Rect r)> _drops = new();
     readonly DispatcherTimer _toastTimer;
     TextBlock? _why;
     Theme _t = Dark;
@@ -50,14 +73,37 @@ sealed class Overlay : Window
     bool? _rounded;
     N.POINT _cursor;
     bool _moved;
+    string _whyText = "";
+    // Dragging a card onto another group.
+    Slot? _press;
+    Point _pressAt;
+    bool _dragging;
+    Group? _over;
+    Popup? _ghost;
+    UIElement? _dropMark, _dropLabel;
 
     public event Action<Slot>? CardClicked;
-    /// <summary>Lanes only: the mouse moved onto a card. Not raised when a redraw puts a card under a still cursor.</summary>
+    /// <summary>A middle click on a card: close that window.</summary>
+    public event Action<Slot>? CardMiddleClicked;
+    /// <summary>The mouse moved onto a card. Not raised when a redraw puts a card under a still cursor.</summary>
     public event Action<Slot>? CardHovered;
+    /// <summary>A card was dragged onto another group's column or lane.</summary>
+    public event Action<Slot, Group>? CardDropped;
+    /// <summary>Cards can be dragged onto another group (Settings' mouse option).</summary>
+    public bool DragEnabled { get; set; } = true;
     /// <summary>Lanes only: a click on the overview outside every card and the search box.</summary>
     public event Action? BackgroundClicked;
     /// <summary>Fires once per show with (ms from show request to first composed frame).</summary>
     public event Action<double>? Composed;
+    /// <summary>The last show's stages in ms, for the log: clearing, building cards, layout and showing, thumbnails.</summary>
+    public (double clear, double draw, double place, double show, double layout, double thumbs) LastParts { get; private set; }
+    /// <summary>How many of the last show's cards were reused from earlier views.</summary>
+    public int LastReused { get; private set; }
+    /// <summary>
+    /// The last show's garbage collections (count and pause ms) and the UI thread's CPU cycles in
+    /// millions. A slow show with few cycles and no GC spent its time waiting for a CPU.
+    /// </summary>
+    public (int gcs, double gcMs, double mcycles) LastCost { get; private set; }
 
     public IntPtr Hwnd => _hwnd;
     public bool IsUp => IsVisible && !_offscreen;
@@ -109,6 +155,7 @@ sealed class Overlay : Window
 
     static bool LightTheme()
     {
+        if (ThemeOverride != null) return ThemeOverride == "light";
         using var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
         return k?.GetValue("AppsUseLightTheme") is int v && v != 0;
     }
@@ -144,38 +191,78 @@ sealed class Overlay : Window
         CompositionTarget.Rendering += done;
     }
 
+    /// <summary>
+    /// Draw a view's cards into the hidden overlay and lay them out, without showing anything, so the next
+    /// show reuses them. Returns how many cards weren't already built.
+    /// </summary>
+    public int Prebuild(List<Section> secs, ViewKind view)
+    {
+        if (IsVisible || _hwnd == IntPtr.Zero) return 0;
+        _canvas.Children.Clear();
+        _cards.Clear();
+        _cardItems.Clear();
+        _drops.Clear();
+        _mon = MonitorUnderCursor();
+        _t = LightTheme() ? Light : Dark;
+        _session++;
+        LastReused = 0;
+        var slots = new List<(Slot, IntPtr, Rect)>();
+        var (w, h) = view == ViewKind.Lanes ? DrawLanes(secs, "", 0, "", "", slots) : DrawPanel(secs, "", 0, "", "", view == ViewKind.Columns, slots);
+        Width = w; Height = h;
+        UpdateLayout();
+        PruneCards();
+        return _cards.Count - LastReused;
+    }
+
     /// <param name="why">Footer line for the selected window.</param>
     /// <param name="hints">Key hints for the footer's second line.</param>
     public void ShowSections(List<Section> secs, Slot? sel, string filter, int hidden, string why, string hints, ViewKind view = ViewKind.Grid, bool offscreen = false)
     {
         long tReq = Stopwatch.GetTimestamp();
+        int gc0 = GC.CollectionCount(0);
+        var pause0 = GC.GetTotalPauseDuration();
+        N.QueryThreadCycleTime(N.GetCurrentThread(), out ulong cyc0);
         _toastTimer.Stop();
         _toastOnly = false;
+        EndDrag(); // a redraw while dragging (a tab list arrived, say) drops nothing
         ClearThumbs();
         _canvas.Children.Clear();
         _cards.Clear();
+        _cardItems.Clear();
+        _drops.Clear();
+        long tClear = Stopwatch.GetTimestamp();
 
-        if (!IsUp || offscreen) { _mon = MonitorUnderCursor(); _t = LightTheme() ? Light : Dark; N.GetCursorPos(out _cursor); }
+        if (!IsUp || offscreen) { _mon = MonitorUnderCursor(); _t = LightTheme() ? Light : Dark; N.GetCursorPos(out _cursor); _session++; }
+        LastReused = 0;
         Background = _t.Pane;
         _view = view;
-        var slots = new List<(IntPtr src, Rect r)>();
+        var slots = new List<(Slot slot, IntPtr src, Rect r)>();
         var (winW, winH) = view == ViewKind.Lanes
             ? DrawLanes(secs, filter, hidden, why, hints, slots)
             : DrawPanel(secs, filter, hidden, why, hints, view == ViewKind.Columns, slots);
+        long tDraw = Stopwatch.GetTimestamp();
 
         Position(winW, winH, offscreen, bottom: false);
         Corners(view != ViewKind.Lanes);
         SetSelection(sel, null);
+        long tPlace = Stopwatch.GetTimestamp();
 
         if (!IsVisible) Show();
+        long tShow = Stopwatch.GetTimestamp();
         UpdateLayout();
+        long tLayout = Stopwatch.GetTimestamp();
         double dpi = VisualTreeHelper.GetDpi(this).DpiScaleX;
-        foreach (var (src, r) in slots) AddThumb(src, r, dpi);
+        foreach (var (slot, src, r) in slots) AddThumb(slot, src, r, dpi);
+        long tThumbs = Stopwatch.GetTimestamp();
+        LastParts = (Clock.Between(tReq, tClear), Clock.Between(tClear, tDraw), Clock.Between(tDraw, tPlace), Clock.Between(tPlace, tShow),
+            Clock.Between(tShow, tLayout), Clock.Between(tLayout, tThumbs));
+        N.QueryThreadCycleTime(N.GetCurrentThread(), out ulong cyc1);
+        LastCost = (GC.CollectionCount(0) - gc0, (GC.GetTotalPauseDuration() - pause0).TotalMilliseconds, (cyc1 - cyc0) / 1e6);
         if (!offscreen) ReportComposed(tReq);
     }
 
     /// <summary>Alt+Tab: a pane sized to its cards, centered. Returns the window's size in DIPs.</summary>
-    (double w, double h) DrawPanel(List<Section> secs, string filter, int hidden, string why, string hints, bool columns, List<(IntPtr src, Rect r)> slots)
+    (double w, double h) DrawPanel(List<Section> secs, string filter, int hidden, string why, string hints, bool columns, List<(Slot, IntPtr, Rect)> slots)
     {
         double workW = _mon.width, workH = _mon.height;
         double maxW = workW * 0.92 - 2 * Pad;
@@ -205,6 +292,16 @@ sealed class Overlay : Window
         }
         foreach (var h in L.heads) Place(Header(h.S, h.W), ox + h.X + (h.W > 0 ? 0 : 4), oy + h.Y);
         PlaceCards(L, ox, oy, slots);
+        foreach (var h in L.heads)
+        {
+            if (h.S.Num is not int || _cardItems.Values.FirstOrDefault(i => i.P.Group?.Key == h.S.Key)?.P.Group is not Group g) continue;
+            Rect r = columns
+                ? new Rect(ox + h.X, oy + h.Y, h.W, L.height)
+                : L.cards.Where(c => c.Slot.Section == h.S.Key).Aggregate(new Rect(ox + h.X, oy + h.Y, 1, HeadH),
+                    (u, c) => Rect.Union(u, new Rect(ox + c.X, oy + c.Y, L.cw, CardH(L.thumbH))));
+            r.Inflate(5, 5);
+            _drops.Add((g, r));
+        }
         top = oy + L.height + 8;
 
         Footer(why, hints, hidden, Pad, top, innerW);
@@ -212,7 +309,7 @@ sealed class Overlay : Window
     }
 
     /// <summary>Win+Tab: the whole work area, the search box on top, one full-height lane per section.</summary>
-    (double w, double h) DrawLanes(List<Section> secs, string filter, int hidden, string why, string hints, List<(IntPtr src, Rect r)> slots)
+    (double w, double h) DrawLanes(List<Section> secs, string filter, int hidden, string why, string hints, List<(Slot, IntPtr, Rect)> slots)
     {
         double workW = _mon.width, workH = _mon.height;
         var o = Layouts.Lanes(secs, workW, workH);
@@ -226,18 +323,29 @@ sealed class Overlay : Window
         if (secs.Count == 0) Place(Empty(filter, workW), 0, o.Y + 120);
         foreach (var h in o.L.heads) Place(Header(h.S, h.W), o.X + h.X, o.Y + h.Y);
         PlaceCards(o.L, o.X, o.Y, slots);
+        foreach (var h in o.L.heads)
+            if (_cardItems.Values.FirstOrDefault(i => i.P.Group?.Key == h.S.Key)?.P.Group is Group g)
+                _drops.Add((g, new Rect(o.X + h.X - LanePad, o.Y - LanePad, h.W + 2 * LanePad, o.LaneH + 2 * LanePad)));
         Footer(why, hints, hidden, LanesSide, o.FootY, workW - 2 * LanesSide);
         return (workW, workH);
     }
 
-    void PlaceCards(Layouts.Result L, double ox, double oy, List<(IntPtr src, Rect r)> slots)
+    void PlaceCards(Layouts.Result L, double ox, double oy, List<(Slot, IntPtr, Rect)> slots)
     {
         foreach (var c in L.cards)
         {
-            var card = Card(c.Item, c.Slot, L.cw, L.thumbH);
+            // A waiting session's card counts the minutes, so the minutes are part of what it shows.
+            var key = new CardKey(c.Slot, c.Item, L.cw, L.thumbH, _t, c.Item.W.Agent is { State: "needs" } a ? Terminals.Ago(a.Since) : null);
+            Border card;
+            if (_cardCache.TryGetValue(key, out var hit)) { card = hit.card; LastReused++; }
+            else card = Card(c.Item, c.Slot, L.cw, L.thumbH);
+            _cardCache[key] = (card, _session);
             Place(card, ox + c.X, oy + c.Y);
             _cards[c.Slot] = card;
-            if (!c.Item.W.Minimized) slots.Add((c.Item.W.Hwnd, new Rect(ox + c.X + CardPad, oy + c.Y + CardPad, L.cw - 2 * CardPad, L.thumbH)));
+            _cardItems[c.Slot] = c.Item;
+            // A tab that isn't in front has no picture: the window's thumbnail would show another tab.
+            if (!c.Item.W.Minimized && !c.Item.W.HiddenTab)
+                slots.Add((c.Slot, c.Item.W.Hwnd, new Rect(ox + c.X + CardPad, oy + c.Y + CardPad, L.cw - 2 * CardPad, L.thumbH)));
         }
     }
 
@@ -307,10 +415,17 @@ sealed class Overlay : Window
         Width = w; Height = h;
         if (offscreen) { Left = -20000; Top = -20000; return; }
         double s = _mon.scale;
-        int pxW = (int)Math.Round(w * s), pxH = (int)Math.Round(h * s);
-        int x = (int)(_mon.left + (_mon.width * s - pxW) / 2);
-        int y = bottom ? (int)(_mon.top + _mon.height * s - pxH - 72 * s) : (int)(_mon.top + (_mon.height * s - pxH) / 2);
+        int left = (int)_mon.left, top = (int)_mon.top, workW = (int)Math.Round(_mon.width * s), workH = (int)Math.Round(_mon.height * s);
+        var (x, y) = Layouts.Center(left, top, workW, workH, (int)Math.Round(w * s), (int)Math.Round(h * s), s, bottom);
+        double before = VisualTreeHelper.GetDpi(this).DpiScaleX;
         N.SetWindowPos(_hwnd, IntPtr.Zero, x, y, 0, 0, N.SWP_NOSIZE | N.SWP_NOZORDER | N.SWP_NOACTIVATE);
+        // Onto a monitor of another scale, WPF resizes the window to the new scale during the move, and
+        // Windows may shift it while it does. Center it again on the size it ended up with.
+        if (VisualTreeHelper.GetDpi(this).DpiScaleX != before && N.GetWindowRect(_hwnd, out var r))
+        {
+            var (x2, y2) = Layouts.Center(left, top, workW, workH, r.Right - r.Left, r.Bottom - r.Top, s, bottom);
+            if (x2 != r.Left || y2 != r.Top) N.SetWindowPos(_hwnd, IntPtr.Zero, x2, y2, 0, 0, N.SWP_NOSIZE | N.SWP_NOZORDER | N.SWP_NOACTIVATE);
+        }
     }
 
     void Place(UIElement e, double x, double y) { Canvas.SetLeft(e, x); Canvas.SetTop(e, y); _canvas.Children.Add(e); }
@@ -353,8 +468,9 @@ sealed class Overlay : Window
     Border Card(Item it, Slot slot, double cw, double thumbH)
     {
         var icon = Icons.For(it.W);
-        var thumb = new Border { Height = thumbH, CornerRadius = new CornerRadius(5), Background = _t.ThumbBg };
-        if (it.W.Minimized)
+        var thumb = new Border { Height = thumbH, CornerRadius = new CornerRadius(5), Background = _t.ThumbBg, ClipToBounds = true };
+        if (it.W.HiddenTab) thumb.Child = TabFace(it.W, thumbH);
+        else if (it.W.Minimized)
         {
             // DWM keeps no live image of a minimized window; show what it is instead.
             var stack = new StackPanel { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center };
@@ -370,16 +486,13 @@ sealed class Overlay : Window
             DockPanel.SetDock(img, Dock.Left);
             cap.Children.Add(img);
         }
-        if (it.IsCurrent)
+        // In the caption, not over the thumbnail: DWM draws thumbnails on top of everything.
+        var pill = it.IsCurrent ? Pill("NOW", _t.Badge, _t.Muted)
+            : it.W.Agent?.State switch { "needs" => Pill("Needs you", _t.NeedsBg, _t.Needs), "working" => Pill("Working", _t.WorkBg, _t.Work), _ => null };
+        if (pill != null)
         {
-            // In the caption, not over the thumbnail: DWM draws thumbnails on top of everything.
-            var now = new Border
-            {
-                CornerRadius = new CornerRadius(4), Background = _t.Badge, Padding = new Thickness(5, 0, 5, 1), Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
-                Child = new TextBlock { Text = "NOW", FontFamily = Ui, FontSize = 9, FontWeight = FontWeights.SemiBold, Foreground = _t.Muted },
-            };
-            DockPanel.SetDock(now, Dock.Right);
-            cap.Children.Add(now);
+            DockPanel.SetDock(pill, Dock.Right);
+            cap.Children.Add(pill);
         }
         cap.Children.Add(new TextBlock { Text = it.W.Title, FontFamily = Ui, FontSize = 12, Foreground = _t.Ink, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center });
 
@@ -394,12 +507,162 @@ sealed class Overlay : Window
             Width = cw, Height = CardH(thumbH), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(2), Padding = new Thickness(CardPad - 2),
             Background = Brushes.Transparent, BorderBrush = Brushes.Transparent, Child = body, Cursor = Cursors.Hand, Tag = slot,
         };
-        card.MouseLeftButtonUp += (s, e) => { e.Handled = true; CardClicked?.Invoke((Slot)((Border)s).Tag); };
-        card.MouseMove += (s, _) => { if (_moved && _view == ViewKind.Lanes) { _moved = false; CardHovered?.Invoke((Slot)((Border)s).Tag); } };
+        // The window sets these too, but a card taken off the canvas loses inherited values and gets them
+        // back when it's added again, which re-measures it. Set on the card, a reused card stays measured.
+        card.UseLayoutRounding = true;
+        TextOptions.SetTextFormattingMode(card, TextFormattingMode.Display);
+        RenderOptions.SetBitmapScalingMode(card, BitmapScalingMode.HighQuality);
+        card.MouseLeftButtonDown += (s, e) =>
+        {
+            e.Handled = true;
+            _press = (Slot)((Border)s).Tag;
+            _pressAt = e.GetPosition(_canvas);
+            ((Border)s).CaptureMouse();
+        };
+        card.MouseLeftButtonUp += (s, e) =>
+        {
+            e.Handled = true;
+            var b = (Border)s;
+            var slot = (Slot)b.Tag;
+            bool pressed = _press == slot, dropped = _dragging;
+            var over = _over;
+            EndDrag();
+            b.ReleaseMouseCapture();
+            if (dropped) { if (over != null) CardDropped?.Invoke(slot, over); }
+            else if (pressed) CardClicked?.Invoke(slot);
+        };
+        card.LostMouseCapture += (_, _) => { if (_dragging) EndDrag(); };
+        card.MouseUp += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; CardMiddleClicked?.Invoke((Slot)((Border)s).Tag); } };
+        card.MouseMove += (s, e) =>
+        {
+            if (_press is Slot p && e.LeftButton == MouseButtonState.Pressed && DragEnabled) { DragTo(p, e.GetPosition(_canvas)); return; }
+            if (_moved) { _moved = false; CardHovered?.Invoke((Slot)((Border)s).Tag); }
+        };
         return card;
     }
 
-    void AddThumb(IntPtr src, Rect slot, double dpi)
+    Border Pill(string text, Brush bg, Brush fg) => new()
+    {
+        CornerRadius = new CornerRadius(4), Background = bg, Padding = new Thickness(5, 0, 5, 1), Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+        Child = new TextBlock { Text = text, FontFamily = Ui, FontSize = 9.5, FontWeight = FontWeights.SemiBold, Foreground = fg },
+    };
+
+    /// <summary>A terminal tab that isn't in front. Windows draws no picture of it, so the card says what it is.</summary>
+    UIElement TabFace(WinInfo w, double thumbH)
+    {
+        var t = w.Tab!;
+        var a = w.Agent;
+        var g = new System.Windows.Controls.Grid { Margin = new Thickness(8, 6, 8, 6) };
+        g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        g.RowDefinitions.Add(new RowDefinition());
+        g.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        if (thumbH >= 60)
+            g.Children.Add(new TextBlock { Text = $"Terminal tab {t.Index + 1} of {t.Count}", FontFamily = Ui, FontSize = 10, Foreground = _t.Muted, TextTrimming = TextTrimming.CharacterEllipsis });
+        var proj = new TextBlock
+        {
+            Text = a?.Project ?? Terminals.Bare(w.Title), FontFamily = Ui, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = _t.Ink,
+            TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center,
+        };
+        System.Windows.Controls.Grid.SetRow(proj, 1);
+        g.Children.Add(proj);
+        var (text, brush) = a?.State switch
+        {
+            "needs" => ($"Waiting for you · {Terminals.Ago(a.Since)}", _t.Needs),
+            "working" => ("Working", _t.Work),
+            "idle" => ("Idle", _t.Muted),
+            _ => ("Not the tab in front", _t.Muted),
+        };
+        var state = new TextBlock
+        {
+            Text = text, FontFamily = Ui, FontSize = 10.5, Foreground = brush, TextTrimming = TextTrimming.CharacterEllipsis,
+            FontWeight = a?.State is "needs" or "working" ? FontWeights.SemiBold : FontWeights.Normal,
+        };
+        System.Windows.Controls.Grid.SetRow(state, 2);
+        g.Children.Add(state);
+        return g;
+    }
+
+    // ---------- drag to regroup ----------
+
+    void DragTo(Slot slot, Point p)
+    {
+        if (!_dragging)
+        {
+            if ((p - _pressAt).Length < 6 || !_cardItems.TryGetValue(slot, out var it)) return;
+            _dragging = true;
+            if (_cards.TryGetValue(slot, out var card)) card.Opacity = 0.35;
+            ThumbOpacity(slot, 90);
+            // DWM draws thumbnails over everything in this window, so the card being dragged is a popup of its own.
+            _ghost = new Popup { AllowsTransparency = true, Placement = PlacementMode.Relative, PlacementTarget = _canvas, IsHitTestVisible = false, Child = Ghost(it) };
+            _ghost.IsOpen = true;
+        }
+        _ghost!.HorizontalOffset = p.X + 10;
+        _ghost.VerticalOffset = p.Y + 10;
+        var item = _cardItems.GetValueOrDefault(slot);
+        var over = _drops.FirstOrDefault(d => d.r.Contains(p));
+        var g = over.g == item?.P.Group ? null : over.g;
+        if (g == _over) return;
+        _over = g;
+        if (_dropMark != null) _canvas.Children.Remove(_dropMark);
+        if (_dropLabel != null) _canvas.Children.Remove(_dropLabel);
+        _dropMark = _dropLabel = null;
+        if (g == null) { SetWhy(_whyText); return; }
+        var r = over.r;
+        _dropMark = new Rectangle
+        {
+            Width = r.Width, Height = r.Height, RadiusX = 9, RadiusY = 9, Stroke = _t.Accent, StrokeThickness = 2,
+            StrokeDashArray = new DoubleCollection { 3, 2 }, IsHitTestVisible = false,
+        };
+        Place(_dropMark, r.X, r.Y);
+        _dropLabel = new Border
+        {
+            CornerRadius = new CornerRadius(5), BorderBrush = _t.Accent, BorderThickness = new Thickness(1), Background = _t.Pane, Padding = new Thickness(7, 2, 7, 3), IsHitTestVisible = false,
+            Child = new TextBlock { Text = "Move to " + g.Name, FontFamily = Ui, FontSize = 11.5, FontWeight = FontWeights.SemiBold, Foreground = _t.Accent },
+        };
+        Place(_dropLabel, r.X + 8, r.Bottom - 30);
+        string what = item?.W.Tab != null ? "this tab" : "this window";
+        SetWhy($"Drop to move {what} to {g.Name}", keep: false);
+    }
+
+    UIElement Ghost(Item it)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        if (Icons.For(it.W) is ImageSource icon) row.Children.Add(new Image { Source = icon, Width = 16, Height = 16, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center });
+        row.Children.Add(new TextBlock { Text = it.W.Title, FontFamily = Ui, FontSize = 12, Foreground = _t.Ink, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 200, VerticalAlignment = VerticalAlignment.Center });
+        return new Border
+        {
+            Child = row, Background = _t.Pane, BorderBrush = _t.Accent, BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(9, 6, 9, 6), Margin = new Thickness(12), RenderTransform = new RotateTransform(-2),
+            Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 6, Opacity = 0.35 },
+        };
+    }
+
+    void EndDrag()
+    {
+        bool was = _dragging;
+        _dragging = false;
+        _over = null;
+        if (_ghost != null) { _ghost.IsOpen = false; _ghost = null; }
+        if (_dropMark != null) _canvas.Children.Remove(_dropMark);
+        if (_dropLabel != null) _canvas.Children.Remove(_dropLabel);
+        _dropMark = _dropLabel = null;
+        if (was && _press is Slot s)
+        {
+            if (_cards.TryGetValue(s, out var card)) card.Opacity = 1;
+            ThumbOpacity(s, 255);
+            SetWhy(_whyText);
+        }
+        _press = null;
+    }
+
+    void ThumbOpacity(Slot s, byte opacity)
+    {
+        if (!_thumbOf.TryGetValue(s, out var thumb)) return;
+        var p = new N.DWM_THUMBNAIL_PROPERTIES { dwFlags = N.DWM_TNP_OPACITY, opacity = opacity };
+        N.DwmUpdateThumbnailProperties(thumb, ref p);
+    }
+
+    void AddThumb(Slot card, IntPtr src, Rect slot, double dpi)
     {
         if (N.DwmRegisterThumbnail(_hwnd, src, out IntPtr thumb) != 0) return;
         // Fit the source's aspect ratio inside the slot.
@@ -418,6 +681,7 @@ sealed class Overlay : Window
         };
         N.DwmUpdateThumbnailProperties(thumb, ref p);
         _thumbs.Add(thumb);
+        _thumbOf[card] = thumb;
     }
 
     // ---------- updates ----------
@@ -433,8 +697,10 @@ sealed class Overlay : Window
         if (why != null) SetWhy(why);
     }
 
-    void SetWhy(string why)
+    /// <param name="keep">False for a passing message (drop here) that the Why line comes back from.</param>
+    void SetWhy(string why, bool keep = true)
     {
+        if (keep) _whyText = why;
         if (_why == null) return;
         _why.Inlines.Clear();
         int colon = why.IndexOf(": ", StringComparison.Ordinal);
@@ -450,9 +716,12 @@ sealed class Overlay : Window
     public void Toast(string text)
     {
         if (IsUp && !_toastOnly) { SetWhy(text); return; }
+        EndDrag();
         ClearThumbs();
         _canvas.Children.Clear();
         _cards.Clear();
+        _cardItems.Clear();
+        _drops.Clear();
         _why = null;
         _mon = MonitorUnderCursor();
         _t = LightTheme() ? Light : Dark;
@@ -473,6 +742,7 @@ sealed class Overlay : Window
     {
         foreach (var t in _thumbs) N.DwmUnregisterThumbnail(t);
         _thumbs.Clear();
+        _thumbOf.Clear();
     }
 
     /// <summary>Self-test: where each card is on screen, in physical pixels.</summary>
@@ -483,7 +753,20 @@ sealed class Overlay : Window
         {
             var a = card.PointToScreen(new Point(0, 0));
             var b = card.PointToScreen(new Point(card.Width, card.Height));
-            list.Add(new { sec = slot.Section, hwnd = slot.Hwnd.ToInt64(), x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y) });
+            list.Add(new { sec = slot.Section, hwnd = slot.Hwnd.ToInt64(), tab = slot.Tab, x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y) });
+        }
+        return list;
+    }
+
+    /// <summary>Self-test: where each group's drop area is on screen, in physical pixels.</summary>
+    public List<object> DropRects()
+    {
+        var list = new List<object>();
+        foreach (var (g, r) in _drops)
+        {
+            var a = _canvas.PointToScreen(r.TopLeft);
+            var b = _canvas.PointToScreen(r.BottomRight);
+            list.Add(new { group = g.Key, x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y) });
         }
         return list;
     }
@@ -500,9 +783,17 @@ sealed class Overlay : Window
 
     public void HideOverlay()
     {
+        EndDrag();
         _toastTimer.Stop();
         _toastOnly = false;
         ClearThumbs();
         Hide();
+        PruneCards();
+    }
+
+    /// <summary>Cards not drawn in the last three views go; after a filter or a closed window most of the rest stay.</summary>
+    void PruneCards()
+    {
+        foreach (var k in _cardCache.Where(kv => kv.Value.session < _session - 2).Select(kv => kv.Key).ToList()) _cardCache.Remove(k);
     }
 }

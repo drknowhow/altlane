@@ -13,8 +13,10 @@ namespace Altlane;
 /// </summary>
 static class TestWindows
 {
-    public const string ReadyEvent = "Altlane.Test.WindowsReady", Prefix = "Altlane test ";
+    public const string ReadyEvent = "Altlane.Test.WindowsReady", BulkReadyEvent = "Altlane.Test.BulkReady", Prefix = "Altlane test ";
     public static readonly string[] Names = { "alpha", "bravo", "charlie", "delta", "echo", "foxtrot" };
+    /// <summary>The groups --bulk spreads its windows over, titled "Altlane test bulk GROUP NN".</summary>
+    public static readonly string[] BulkGroups = { "agents", "term", "web", "create", "files", "docs", "other" };
     static readonly Color[] Colors =
     {
         Color.FromArgb(0xC2, 0x63, 0x34), Color.FromArgb(0xA8, 0x4E, 0x2A), Color.FromArgb(0x3C, 0x8D, 0x5A),
@@ -28,19 +30,29 @@ static class TestWindows
         Application.EnableVisualStyles();
 
         var forms = new List<TestForm>();
-        for (int i = 0; i < Names.Length; i++)
-        {
-            var f = new TestForm(Names[i], Colors[i]) { StartPosition = FormStartPosition.Manual, Location = new Point(80 + i * 60, 80 + i * 45) };
-            forms.Add(f);
-            f.Show();
-        }
+        int bulk = (int)o.Num("bulk", 0);
+        if (bulk > 0)
+            for (int i = 0; i < bulk; i++)
+            {
+                var f = new TestForm($"bulk {BulkGroups[i % BulkGroups.Length]} {i + 1:00}", Colors[i % Colors.Length], new Size(300, 190))
+                    { StartPosition = FormStartPosition.Manual, Location = new Point(40 + i % 10 * 70, 40 + i / 10 * 60) };
+                forms.Add(f);
+                f.Show();
+            }
+        else
+            for (int i = 0; i < Names.Length; i++)
+            {
+                var f = new TestForm(Names[i], Colors[i]) { StartPosition = FormStartPosition.Manual, Location = new Point(80 + i * 60, 80 + i * 45) };
+                forms.Add(f);
+                f.Show();
+            }
 
         var quit = new System.Windows.Forms.Timer { Interval = (int)(o.Num("minutes", 10) * 60_000) };
         quit.Tick += (_, _) => Application.Exit();
         quit.Start();
 
         Log.Write("windows_ready", new { pid = Environment.ProcessId, count = forms.Count });
-        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, ReadyEvent);
+        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, bulk > 0 ? BulkReadyEvent : ReadyEvent);
         ready.Set();
         Application.Run();
         Log.Flush();
@@ -52,11 +64,11 @@ sealed class TestForm : Form
 {
     readonly string _name;
 
-    public TestForm(string name, Color color)
+    public TestForm(string name, Color color, Size? size = null)
     {
         _name = name;
         Text = TestWindows.Prefix + name;
-        ClientSize = new Size(420, 280);
+        ClientSize = size ?? new Size(420, 280);
         BackColor = color;
         DoubleBuffered = true;
         FormClosed += (_, _) =>

@@ -43,6 +43,11 @@ WizardStyle=modern
 ; Altlane is asked to quit in code below; the Restart Manager can't reach a tray app's hidden window.
 CloseApplications=no
 RestartApplications=no
+#ifdef Sign
+; build-installer.ps1 defines Sign and passes the "altlane" sign tool when a certificate is set.
+SignTool=altlane
+SignedUninstaller=yes
+#endif
 
 [Tasks]
 Name: "startup"; Description: "Start Altlane when I sign in"

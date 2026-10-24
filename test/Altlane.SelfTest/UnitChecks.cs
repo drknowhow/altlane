@@ -27,6 +27,13 @@ static class UnitChecks
         SaveRules();
         SectionsLogic();
         LayoutLogic();
+        ClaudeMarks();
+        RulesUpgrade();
+        TabMoves();
+        Sessions();
+        TabSections();
+        UsageCounts();
+        MonitorPlacement();
         Console.WriteLine($"\n{_pass} passed, {_fail} failed");
         return _fail == 0 ? 0 : 1;
     }
@@ -276,5 +283,169 @@ static class UnitChecks
         Check("lanes: the overview's lanes sit further apart than Alt+Tab's columns", lw.heads[1].X - (lw.heads[0].X + lw.heads[0].W) == Layouts.LaneGapX);
         int aSubs = lw.cards.Where(c => c.Slot.Section == "a").Select(c => c.X).Distinct().Count();
         Check("lanes: a group of five, too tall for its lane, continues in a second column inside the same lane", aSubs == 2, $"{aSubs} columns, cw {lw.cw}");
+    }
+
+    /// <summary>Claude Code's terminal title marks, as seen on 2026-10-24 (v2.1.308): ◐ ◑ while it works.</summary>
+    static void ClaudeMarks()
+    {
+        var r = Rules.Parse(Rules.Default);
+        Group? G(string title) => r.Place(IntPtr.Zero, F(title, "WindowsTerminal.exe")).Group;
+        Check("Claude Code's working marks (◐ ◑) go to Agents", G("◐ Win+Tab hover fix")?.Key == "agents" && G("◑ Win+Tab hover fix")?.Key == "agents");
+        Check("a ◐ in the middle of a title is not the mark", G("notes ◐ draft")?.Key == "term");
+        Check("Bare drops a status mark and its space", Terminals.Bare("◐ fix bug") == "fix bug" && Terminals.Bare("✳ api") == "api" && Terminals.Bare("⠂ x y") == "x y");
+        Check("Bare leaves ordinary titles alone", Terminals.Bare("PowerShell") == "PowerShell" && Terminals.Bare("a b") == "a b" && Terminals.Bare("1 file") == "1 file" && Terminals.Bare("◐") == "◐");
+    }
+
+    /// <summary>A rules.json an earlier version wrote gets the new Claude Code pattern; one the user edited is left alone.</summary>
+    static void RulesUpgrade()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "altlane-unit-" + Guid.NewGuid().ToString("N"));
+        string? old = null;
+        try
+        {
+            Paths.Use(dir);
+            Directory.CreateDirectory(dir);
+            string v030 = Rules.Default.Replace(Rules.ClaudeTitle, Rules.OldClaudeTitle).Replace(Rules.ClaudeWhy, Rules.OldClaudeWhy);
+            Check("the 0.3.0 rules text differs from today's", v030 != Rules.Default && v030.Contains(Rules.OldClaudeTitle));
+            File.WriteAllText(Paths.Rules, v030);
+            var store = new RuleStore(System.Windows.Threading.Dispatcher.CurrentDispatcher);
+            store.Load();
+            old = File.ReadAllText(Paths.Rules);
+            Check("0.3.0's rules.json is upgraded on load, the rest of the file unchanged", old == Rules.Default, $"{old.Length} vs {Rules.Default.Length} chars");
+            Check("after the upgrade a working Claude Code tab goes to Agents", store.Current.Place(IntPtr.Zero, F("◐ api", "WindowsTerminal.exe")).Group?.Key == "agents");
+            string custom = v030.Replace("\"group\": \"agents\"", "\"group\": \"term\"");
+            File.WriteAllText(Paths.Rules, custom.Replace(Rules.OldClaudeTitle, Rules.OldClaudeTitle.Replace("2733", "2734")));
+            string before = File.ReadAllText(Paths.Rules);
+            store.Load();
+            Check("a rules.json whose Claude Code rule was edited is left as it is", File.ReadAllText(Paths.Rules) == before);
+        }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
+    }
+
+    /// <summary>Ctrl+number or a drag on one terminal tab moves that tab, keyed by window and name without its mark.</summary>
+    static void TabMoves()
+    {
+        var r = Rules.Parse(Rules.Default);
+        var tabA = new WinInfo((IntPtr)5, "◐ api", "WindowsTerminal.exe", "Terminal", null, null, false, new TermTab("◐ api", 0, 2, true));
+        var tabB = tabA with { Title = "PowerShell", Tab = new TermTab("PowerShell", 1, 2, false) };
+        var moved = new Dictionary<WinKey, string> { [WinKey.Of(tabA)] = "web" };
+        Placement P(WinInfo w) => r.Place(WinKey.Of(w), F(w.Title, w.Exe), moved);
+        Check("a moved tab goes where it was moved", P(tabA) is { Level: RuleLevel.Window, Group.Key: "web" });
+        Check("the window's other tab stays put", P(tabB).Group?.Key == "term");
+        var spun = tabA with { Title = "◑ api", Tab = new TermTab("◑ api", 0, 2, true) };
+        Check("the move survives the spinner turning (◐ to ◑)", WinKey.Of(spun) == WinKey.Of(tabA) && P(spun).Group?.Key == "web");
+        var plain = new WinInfo((IntPtr)5, "◐ api", "WindowsTerminal.exe", "Terminal", null, null, false);
+        Check("a window with no tab cards keys by window alone", WinKey.Of(plain) == new WinKey((IntPtr)5, null) && P(plain).Group?.Key == "agents");
+    }
+
+    /// <summary>Claude Code's status files, written to a temp folder in the shape v2.1.308 uses.</summary>
+    static void Sessions()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "altlane-unit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        int live = Environment.ProcessId;
+        (string name, AgentInfo info)? S(string json)
+        {
+            string p = Path.Combine(dir, Guid.NewGuid().ToString("N") + ".json");
+            File.WriteAllText(p, json);
+            return Terminals.ParseSession(p);
+        }
+        string J(string status, string entry = "cli", int? pid = null, string? name = "api fix") =>
+            $$"""{"pid":{{pid ?? live}},"sessionId":"x","cwd":"Y:\\Projects\\Altitude","name":{{(name == null ? "null" : "\"" + name + "\"")}},"status":"{{status}}","statusUpdatedAt":{{DateTimeOffset.UtcNow.AddMinutes(-3).ToUnixTimeMilliseconds()}},"entrypoint":"{{entry}}"}""";
+        try
+        {
+            var w = S(J("waiting"));
+            Check("a waiting terminal session needs you, with its project and since when",
+                w is { name: "api fix", info: { State: "needs", Project: "Altitude" } } && Math.Abs((DateTime.Now - w.Value.info.Since).TotalMinutes - 3) < 0.1,
+                w?.ToString() ?? "null");
+            Check("busy is working, anything else idle", S(J("busy"))?.info.State == "working" && S(J("idle"))?.info.State == "idle" && S(J("odd"))?.info.State == "idle");
+            Check("the desktop app's and SDK sessions have no tab, so they're skipped", S(J("waiting", "claude-desktop")) == null && S(J("waiting", "sdk-cli")) == null);
+            Check("a session whose process has gone is skipped", S(J("waiting", pid: 999_999_9)) == null);
+            Check("a session with no name is skipped", S(J("waiting", name: null)) == null);
+            Check("a half-written file is skipped", S("{\"pid\": 1") == null && S("[]") == null);
+            Check("Ago reads minutes", Terminals.Ago(DateTime.Now.AddMinutes(-3)) == "3 min" && Terminals.Ago(DateTime.Now) == "just now" && Terminals.Ago(DateTime.Now.AddMinutes(-75)) == "1 h 15 min");
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    /// <summary>A Windows Terminal window whose three tabs each have a card.</summary>
+    static void TabSections()
+    {
+        var r = Rules.Parse(Rules.Default);
+        AgentInfo A(string state) => new(state, DateTime.Now, "Altitude");
+        Item T(int i, string title, AgentInfo? a, bool cur = false)
+        {
+            var w = new WinInfo((IntPtr)9, title, "WindowsTerminal.exe", "Terminal", null, null, false, new TermTab(title, i, 3, i == 0), a);
+            return new Item(w, r.Place(WinKey.Of(w), F(title, w.Exe)), cur);
+        }
+        Item W(int h, string title, string exe) { var w = new WinInfo((IntPtr)h, title, exe, exe, null, null, false); return new Item(w, r.Place(w.Hwnd, F(title, exe, null, r.IsBrowser(exe))), false); }
+        var mru = new List<Item>
+        {
+            T(0, "◐ Win+Tab hover fix", A("working"), cur: true),
+            T(1, "✳ Release notes", A("needs")),
+            T(2, "✳ Daily report", A("idle")),
+            W(2, "Inbox", "chrome.exe"),
+            W(3, "Claude", "claude.exe"),
+            W(4, "Downloads", "explorer.exe"),
+            W(5, "todo.txt", "notepad.exe"),
+        };
+        var secs = Sections.Build(mru, r.Groups, "");
+        Check("Recent skips tabs that aren't in front", secs[0].Items.Select(i => (int)i.W.Hwnd).SequenceEqual(new[] { 2, 3, 4 }));
+        var agents = secs.First(s => s.Key == "agents");
+        Check("each tab is its own card in its group", agents.Items.Count(i => i.W.Hwnd == (IntPtr)9) == 3);
+        var flat = Sections.Flat(secs);
+        Check("tab cards of one window are distinct slots", flat.Where(s => s.Hwnd == (IntPtr)9).Distinct().Count() == 3);
+        Check("a tab card is found again by its slot", Sections.ItemAt(secs, new Slot("agents", (IntPtr)9, 2))?.W.Title == "✳ Daily report");
+        Check("without needs-first, Agents keeps most-recent order",
+            string.Join("|", agents.Items.Select(i => i.W.Title)) == "◐ Win+Tab hover fix|✳ Release notes|✳ Daily report|Claude");
+        var first = Sections.Build(mru, r.Groups, "", needsFirst: true).First(s => s.Key == "agents");
+        Check("with needs-first, the session waiting for you leads Agents, the rest in order",
+            string.Join("|", first.Items.Select(i => i.W.Title)) == "✳ Release notes|◐ Win+Tab hover fix|✳ Daily report|Claude");
+        Check("Alt+number skips hidden tabs and the window in front", Sections.Direct(mru, r.ByKey("agents")!)?.W.Hwnd == (IntPtr)3);
+        // The overlay keys its cards by slot, so two tabs sharing a slot would draw one card.
+        bool Distinct(Layouts.Result L) => L.cards.Select(c => c.Slot).Distinct().Count() == L.cards.Count && L.cards.Count(c => c.Slot.Hwnd == (IntPtr)9) == 3;
+        Check("the grid gives each tab card its own slot", Distinct(Layouts.Grid(secs, 1700, 900)));
+        Check("the columns give each tab card its own slot", Distinct(Layouts.Columns(secs, 1700, 900)));
+        Check("the lanes give each tab card its own slot", Distinct(Layouts.Lanes(secs, 1900, 1000).L));
+    }
+
+    /// <summary>Where the overlay lands on monitors this PC may not have: left of or above the primary, at other scales.</summary>
+    static void MonitorPlacement()
+    {
+        bool Inside((int x, int y) p, int l, int t, int ww, int wh, int w, int h) => p.x >= l && p.y >= t && p.x + w <= l + ww && p.y + h <= t + wh;
+        Check("centered on the primary monitor", Layouts.Center(0, 0, 1920, 1040, 800, 600, 1.0, false) == (560, 220));
+        var left = Layouts.Center(-2560, 0, 2560, 1392, 1200, 900, 1.5, false);
+        Check("centered on a 150% monitor left of the primary", left == (-1880, 246) && Inside(left, -2560, 0, 2560, 1392, 1200, 900));
+        var above = Layouts.Center(0, -1440, 2560, 1400, 1000, 800, 1.0, false);
+        Check("centered on a monitor above the primary", above == (780, -1140) && Inside(above, 0, -1440, 2560, 1400, 1000, 800));
+        Check("a toast sits 72 scaled pixels above the bottom of the work area", Layouts.Center(0, 0, 1920, 1032, 300, 40, 1.25, true) == (810, 902));
+        Check("a window bigger than the work area keeps its corner on that monitor", Layouts.Center(-1920, 0, 1920, 1040, 2000, 1100, 1.0, false) == (-1920, 0));
+    }
+
+    static void UsageCounts()
+    {
+        var u = new Usage { Days = 7 };
+        foreach (var line in new[]
+        {
+            """{"t":1,"src":"app","ev":"switch","how":"alt_up","quick":false,"overview":false,"section":"recent","group":"term","ok":true,"from_key_ms":1000,"pick":"tab","nav":{"tab":2}}""",
+            """{"t":2,"src":"app","ev":"switch","how":"click","quick":false,"overview":false,"section":"agents","group":"agents","ok":true,"from_key_ms":2000,"pick":"mouse","nav":{}}""",
+            """{"t":3,"src":"app","ev":"switch","how":"alt_up","quick":true,"overview":false,"section":"recent","group":"web","ok":true,"from_key_ms":40}""",
+            """{"t":4,"src":"app","ev":"switch","how":"alt_up","quick":false,"overview":false,"section":"recent","group":"web","ok":false,"from_key_ms":3000}""",
+            """{"t":5,"src":"app","ev":"switch","how":"enter","quick":false,"overview":true,"section":"files","group":"files","ok":true,"from_key_ms":9000,"pick":"search","nav":{"typed":3}}""",
+            """{"t":6,"src":"app","ev":"session_start","kind":"overview"}""",
+            """{"t":7,"src":"app","ev":"regroup","via":"drag","group":"term"}""",
+            """{"t":8,"src":"selftest","ev":"switch","how":"alt_up","quick":true}""",
+            """not json""",
+        }) u.Add(line);
+        Check("usage counts switches, landings and quick taps from the app's lines only", u.Switches == 5 && u.Landed == 4 && u.Quick == 1, $"{u.Switches} {u.Landed} {u.Quick}");
+        Check("usage's median covers switches that drew Alt+Tab (not quick, not the overview)", u.MedianMs == 2000, $"{u.MedianMs}");
+        Check("usage sorts picks, with 0.3.0's key releases as unrecorded",
+            u.Picks.GetValueOrDefault("keys") == 1 && u.Picks.GetValueOrDefault("mouse") == 1 && u.Picks.GetValueOrDefault("quick") == 1
+            && u.Picks.GetValueOrDefault("unrecorded") == 1 && u.Picks.GetValueOrDefault("search") == 1);
+        Check("usage counts sections and groups apart", u.Sections["recent"] == 3 && u.Groups["web"] == 2 && u.Typed == 1 && u.Drags == 1 && u.Overviews == 1);
+        var unused = u.Unused(new Settings(), Rules.Parse(Rules.Default).Groups);
+        Check("usage lists what went unused, and what was used once",
+            unused.Contains("Alt+`") && unused.Contains("Ctrl+number") && unused.Contains("Win+Tab (once)") && unused.Contains("Creative") && !unused.Contains("Web")
+            && !unused.Contains("Alt+number"), string.Join(", ", unused));
     }
 }

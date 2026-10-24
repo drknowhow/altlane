@@ -9,6 +9,9 @@ namespace Altlane;
 ///   unit                                              rules and sections logic, no windows
 ///   selftest [--app PATH] [--log-dir DIR] [--idle-wait-s N]   drives Altlane.exe with injected keys
 ///   testwindows [--minutes N] [--log PATH]            six "Altlane test …" windows
+///   testwindows --bulk N [--minutes N] [--log PATH]   N more, spread over the groups (the speed phase)
+///   selftest ... --theme dark|light                   Altlane's theme for the run, whatever Windows uses
+///   selftest ... --only T17,T16                       just those phases, for timing work (verdict NO-GO)
 /// </summary>
 static class Program
 {
