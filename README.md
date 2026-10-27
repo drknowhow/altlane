@@ -37,7 +37,7 @@ in a row. An app that asks whether to save stays open, and its card comes back.
 
 ## Install
 
-Download `Altlane-Setup-0.5.0.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
+Download `Altlane-Setup-0.5.1.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
 run it. It installs for your user only, so there is no admin prompt, and offers to start Altlane when
 you sign in. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 (x64) and offers the download page if that's missing.
@@ -131,8 +131,8 @@ once, and uninstalling removes the task.
   through and are not recorded.
 - Its logs, in `%LOCALAPPDATA%\Altlane\logs`, hold timings, program names such as `chrome.exe`,
   settings changes, and how each window was picked (keys, mouse, a number, how many letters were
-  typed). They never hold window titles or anything you type. Uninstalling offers to delete them along
-  with your rules.
+  typed). They never hold window titles or anything you type. There is one file per day, deleted after
+  14 days, and uninstalling offers to delete them along with your rules.
 - To give each terminal tab a card, it reads Windows Terminal's tab names through UI Automation, the
   interface screen readers use. To mark Claude Code sessions, it reads the status files Claude Code
   keeps in `%USERPROFILE%\.claude\sessions`: each session's name, state and process. It never writes

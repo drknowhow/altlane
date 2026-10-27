@@ -14,7 +14,7 @@ static class Paths
     public static string Rules => Path.Combine(Root, "rules.json");
     public static string Settings => Path.Combine(Root, "settings.json");
     public static string Logs => Path.Combine(Root, "logs");
-    public static string TodayLog => Path.Combine(Logs, $"altlane-{DateTime.Now:yyyyMMdd}.jsonl");
+    public static string TodayLog => Path.Combine(Logs, DailyFile.Name(DateTime.Now));
 
     public static void Use(string root) => Root = Path.GetFullPath(root);
 }

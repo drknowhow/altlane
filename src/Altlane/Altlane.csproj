@@ -15,7 +15,7 @@
     <SelfContained>false</SelfContained>
     <AssemblyName>Altlane</AssemblyName>
     <RootNamespace>Altlane</RootNamespace>
-    <Version>0.5.0</Version>
+    <Version>0.5.1</Version>
     <Product>Altlane</Product>
     <Authors>Dr. Know How</Authors>
     <Company>Dr. Know How</Company>

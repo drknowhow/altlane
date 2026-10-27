@@ -33,6 +33,7 @@ static class UnitChecks
         Sessions();
         TabSections();
         UsageCounts();
+        DailyLogs();
         MonitorPlacement();
         Console.WriteLine($"\n{_pass} passed, {_fail} failed");
         return _fail == 0 ? 0 : 1;
@@ -447,5 +448,46 @@ static class UnitChecks
         Check("usage lists what went unused, and what was used once",
             unused.Contains("Alt+`") && unused.Contains("Ctrl+number") && unused.Contains("Win+Tab (once)") && unused.Contains("Creative") && !unused.Contains("Web")
             && !unused.Contains("Alt+number"), string.Join(", ", unused));
+    }
+
+    static void DailyLogs()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "altlane-unit-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var day = DateTime.Today;
+            string F(DateTime d) => Path.Combine(dir, DailyFile.Name(d));
+            string old = F(day.AddDays(-13)), recent = F(day.AddDays(-3));
+            File.WriteAllText(old, "");
+            File.SetLastWriteTime(old, day.AddDays(-12.5));
+            File.WriteAllText(recent, "");
+            File.SetLastWriteTime(recent, day.AddDays(-3));
+
+            bool oldKept;
+            using (var d = new DailyFile(dir, keepDays: 14))
+            {
+                d.For(day.AddMinutes(23 * 60 + 59)).WriteLine("late");
+                d.For(day.AddDays(1).AddMinutes(1)).WriteLine("early");
+                oldKept = File.Exists(old);
+                d.For(day.AddDays(2).AddHours(10)).WriteLine("next");
+            }
+            Check("a row logged just before midnight and one just after go to two days' files",
+                File.ReadAllText(F(day)).Trim() == "late" && File.ReadAllText(F(day.AddDays(1))).Trim() == "early" && File.ReadAllText(F(day.AddDays(2))).Trim() == "next");
+            Check("each new day prunes logs last written more than 14 days back, and keeps newer ones",
+                oldKept && !File.Exists(old) && File.Exists(recent), $"{oldKept} {File.Exists(old)} {File.Exists(recent)}");
+
+            foreach (var f in Directory.GetFiles(dir)) File.Delete(f);
+            string Row(DateTime at) => "{\"t\":" + new DateTimeOffset(at).ToUnixTimeMilliseconds() + ",\"src\":\"app\",\"ev\":\"switch\",\"quick\":true,\"ok\":true}";
+            // A file a copy before 0.5.1 opened nine days ago and kept writing to until today.
+            File.WriteAllLines(F(day.AddDays(-9)), new[] { Row(day.AddDays(-9).AddHours(10)), Row(day.AddDays(-6).AddHours(10)), Row(day.AddHours(1)) });
+            File.WriteAllLines(F(day.AddDays(-10)), new[] { Row(day.AddDays(-10).AddHours(9)) });
+            File.SetLastWriteTime(F(day.AddDays(-10)), day.AddDays(-10).AddHours(9));
+            File.WriteAllLines(F(day), new[] { Row(day.AddHours(2)) });
+            var u = Usage.Read(dir, 7, day);
+            Check("usage counts an older file's lines from the last 7 days by each line's time, and skips files that ended before",
+                u.Switches == 3 && u.Files == 2, $"{u.Switches} switches in {u.Files} files");
+        }
+        finally { try { Directory.Delete(dir, true); } catch (IOException) { } }
     }
 }

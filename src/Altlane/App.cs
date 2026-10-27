@@ -111,9 +111,8 @@ static class App
     static int Run(Dictionary<string, string> o, bool test)
     {
         bool fromTask = o.ContainsKey("from-task") || o.ContainsKey("takeover");
-        string logPath = o.GetValueOrDefault("log") ?? Paths.TodayLog;
-        Log.Init(logPath, "app");
-        if (!o.ContainsKey("log")) Log.Prune(Paths.Logs, 14);
+        if (o.TryGetValue("log", out var logPath)) Log.Init(logPath, "app");
+        else Log.InitDaily(Paths.Logs, "app", keepDays: 14);
 
         // Admin mode is on but this copy isn't elevated (a Start-menu launch, say): let the task start the elevated one.
         if (!test && !fromTask && !AdminTask.SelfElevated && AdminTask.Exists() && !ControlWindow.Running() && AdminTask.Run())

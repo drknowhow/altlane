@@ -37,29 +37,37 @@ sealed class Usage
     public static Usage Read(string dir, int days, DateTime? today = null)
     {
         var u = new Usage { Days = days };
-        var from = (today ?? DateTime.Today).AddDays(-(days - 1));
+        var from = (today ?? DateTime.Today).Date.AddDays(-(days - 1));
+        double fromMs = new DateTimeOffset(from).ToUnixTimeMilliseconds(), toMs = new DateTimeOffset(from.AddDays(days)).ToUnixTimeMilliseconds();
         string[] files;
         try { files = Directory.GetFiles(dir, "altlane-*.jsonl"); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return u; }
         foreach (var f in files.OrderBy(f => f, StringComparer.Ordinal))
         {
             string stem = Path.GetFileNameWithoutExtension(f);
-            if (!DateTime.TryParseExact(stem["altlane-".Length..], "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day) || day < from) continue;
+            if (!DateTime.TryParseExact(stem["altlane-".Length..], "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day)) continue;
+            // A file is named for the day it was opened. Before 0.5.1 a long-running copy kept writing to
+            // its first day's file, so an older file still counts if it was written to in these days.
+            try { if (day < from && File.GetLastWriteTime(f) < from) continue; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             try
             {
                 // Today's log is open for writing in this process.
                 using var fs = new FileStream(f, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var r = new StreamReader(fs);
                 u.Files++;
-                while (r.ReadLine() is string line) u.Add(line);
+                while (r.ReadLine() is string line) u.Add(line, fromMs, toMs);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
         return u;
     }
 
-    /// <summary>Count one log line. Lines from other sources (the self-test, --list) and broken lines are skipped.</summary>
-    public void Add(string line)
+    /// <summary>
+    /// Count one log line. Lines from other sources (the self-test, --list), broken lines and lines logged
+    /// outside [<paramref name="fromMs"/>, <paramref name="toMs"/>) in unix ms are skipped.
+    /// </summary>
+    public void Add(string line, double fromMs = double.MinValue, double toMs = double.MaxValue)
     {
         JsonDocument doc;
         try { doc = JsonDocument.Parse(line); }
@@ -68,6 +76,7 @@ sealed class Usage
         {
             var o = doc.RootElement;
             if (o.ValueKind != JsonValueKind.Object || Str(o, "src") != "app") return;
+            if (o.TryGetProperty("t", out var t) && t.TryGetDouble(out var ms) && (ms < fromMs || ms >= toMs)) return;
             switch (Str(o, "ev"))
             {
                 case "switch": Switch(o); break;
