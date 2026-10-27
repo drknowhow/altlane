@@ -28,12 +28,16 @@ how long.
 
 ![Two tabs of one terminal: the one in front, and one whose Claude Code session is waiting](docs/terminal-tabs.png)
 
-The mouse works in both views: pointing at a card selects it, clicking switches to it, a middle click
-closes it, and dragging a card onto another group moves it there.
+The mouse works in both views. Pointing at a card selects it, clicking switches to it, and dragging a
+card onto another group moves it there. The × at the right of the selected card's title closes that
+window, and so does a middle click. The view stays open after a close, so you can close several windows
+in a row. An app that asks whether to save stays open, and its card comes back.
+
+![Alt+Tab with the pointer on the close button of the selected card](docs/close-button.png)
 
 ## Install
 
-Download `Altlane-Setup-0.4.0.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
+Download `Altlane-Setup-0.5.0.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
 run it. It installs for your user only, so there is no admin prompt, and offers to start Altlane when
 you sign in. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 (x64) and offers the download page if that's missing.
@@ -57,8 +61,8 @@ quits it from anywhere.
 | 1–9 (Alt held) | First window of that group |
 | Letters, Space | Filter by title, app or group name; the view stays open after Alt is released, Enter switches |
 | Esc | Clears the filter, or closes the view |
-| Del | Closes the selected window, or the selected terminal tab |
-| Mouse | Pointing at a window selects it (Settings can turn this off for Alt+Tab), clicking switches, a middle click closes it, dragging it onto another group moves it there |
+| Del | Closes the selected window, or the selected terminal tab; Alt+Tab stays open |
+| Mouse | Pointing at a window selects it (Settings can turn this off for Alt+Tab), clicking switches, the × on the selected card or a middle click closes it, dragging it onto another group moves it there |
 | Ctrl+1–9 (Alt held) | Moves the selected window to that group |
 | Alt+` | Like Alt+Tab, but only the current window's group; Tab widens to every window |
 | Alt+1–9 | Off by default, since some apps use Alt+number. When on: the most recent window in that group |
@@ -70,7 +74,7 @@ In the Win+Tab overview nothing needs to be held down:
 | Win+Tab | Opens the overview on the previous window, so Enter goes straight back to it |
 | Tab, `, 1–7, arrows | Move as in the columns layout |
 | Letters, Space | Search by title, app or group name; Backspace edits, Esc clears |
-| Mouse | Pointing at a window selects it, clicking switches to it, a middle click closes it, dragging it onto another lane moves it there, clicking anywhere else closes the overview |
+| Mouse | Pointing at a window selects it, clicking switches to it, the × or a middle click closes it, dragging it onto another lane moves it there, clicking anywhere else closes the overview |
 | Enter | Switches to the selected window |
 | Esc, Win+Tab | Closes the overview |
 | Ctrl+1–7, Del | Move the selected window to a group, or close it, as in Alt+Tab |
@@ -156,7 +160,8 @@ winget manifests for the newest installer to `dist\winget` and checks them with 
   status files, usage counts and where the overlay goes on other monitors. No windows.
 - `selftest`: starts `Altlane.exe --test` with its own rules and six test windows, drives it with
   injected keys and mouse moves, and writes `summary.json` and screenshots to `logs/selftest-<time>`.
-  Later phases open a Windows Terminal window with two tabs, and 30 more test windows to time a busy
+  Later phases open a Windows Terminal window with two tabs, two windows for the close button (one
+  refuses its first close, as an app asking to save would), and 30 more test windows to time a busy
   desktop.
   Don't touch the keyboard or mouse while it runs: it waits for 8 s with no input, stops at the first
   real input, and won't run with an admin window in front or beside a running Altlane.

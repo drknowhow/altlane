@@ -80,6 +80,7 @@ static partial class SelfTest
             ["hover_in_alt_tab_and_pick_logged (T14, 4 steps)"] = All("T14", 4),
             ["drag_regroups_and_middle_click_closes (T15, 2 steps)"] = All("T15", 2),
             ["terminal_tabs_marks_select_close (T16, 3 steps)"] = All("T16", 3),
+            ["close_button_closes_and_refused_card_returns (T18, 2 steps)"] = All("T18", 2),
             ["no_crashes"] = crashes == 0,
             ["detectors_proven (stray key leaks, lone Alt opens menu, lone Win opens Start)"] = controlsFired,
         };

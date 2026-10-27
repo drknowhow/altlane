@@ -81,10 +81,17 @@ sealed class Overlay : Window
     Group? _over;
     Popup? _ghost;
     UIElement? _dropMark, _dropLabel;
+    // Each card's close button, and the one the left button went down on.
+    readonly Dictionary<Border, Border> _closeOf = new();
+    Slot? _selected, _closePress;
 
     public event Action<Slot>? CardClicked;
     /// <summary>A middle click on a card: close that window.</summary>
     public event Action<Slot>? CardMiddleClicked;
+    /// <summary>A click on a card's close button.</summary>
+    public event Action<Slot>? CardCloseClicked;
+    /// <summary>Cards have a close button, shown on the selected card and the one under the mouse (Settings).</summary>
+    public bool CloseButtons { get; set; } = true;
     /// <summary>The mouse moved onto a card. Not raised when a redraw puts a card under a still cursor.</summary>
     public event Action<Slot>? CardHovered;
     /// <summary>A card was dragged onto another group's column or lane.</summary>
@@ -134,6 +141,8 @@ sealed class Overlay : Window
         // WPF raises MouseMove when a redraw puts a card under a cursor that hasn't moved; only a real move hovers.
         PreviewMouseMove += (_, _) => { N.GetCursorPos(out var p); _moved = p.X != _cursor.X || p.Y != _cursor.Y; _cursor = p; };
         MouseLeftButtonUp += (_, _) => { if (_view == ViewKind.Lanes && IsUp && !_toastOnly) BackgroundClicked?.Invoke(); };
+        // A close button closes only when the button went down on it too; this runs before its own handler.
+        PreviewMouseLeftButtonDown += (_, _) => _closePress = null;
     }
 
     /// <summary>Rounded corners, except on the overview: it fills the work area, so round corners would show the desktop.</summary>
@@ -487,6 +496,9 @@ sealed class Overlay : Window
             cap.Children.Add(img);
         }
         // In the caption, not over the thumbnail: DWM draws thumbnails on top of everything.
+        var close = CloseX(slot);
+        DockPanel.SetDock(close, Dock.Right);
+        cap.Children.Add(close);
         var pill = it.IsCurrent ? Pill("NOW", _t.Badge, _t.Muted)
             : it.W.Agent?.State switch { "needs" => Pill("Needs you", _t.NeedsBg, _t.Needs), "working" => Pill("Working", _t.WorkBg, _t.Work), _ => null };
         if (pill != null)
@@ -532,13 +544,56 @@ sealed class Overlay : Window
             else if (pressed) CardClicked?.Invoke(slot);
         };
         card.LostMouseCapture += (_, _) => { if (_dragging) EndDrag(); };
+        card.MouseEnter += (s, _) => ShowClose((Border)s);
+        card.MouseLeave += (s, _) => ShowClose((Border)s);
         card.MouseUp += (s, e) => { if (e.ChangedButton == MouseButton.Middle) { e.Handled = true; CardMiddleClicked?.Invoke((Slot)((Border)s).Tag); } };
         card.MouseMove += (s, e) =>
         {
             if (_press is Slot p && e.LeftButton == MouseButtonState.Pressed && DragEnabled) { DragTo(p, e.GetPosition(_canvas)); return; }
             if (_moved) { _moved = false; CardHovered?.Invoke((Slot)((Border)s).Tag); }
         };
+        _closeOf[card] = close;
         return card;
+    }
+
+    static readonly Brush CloseRed = B(0xC4, 0x2B, 0x1C);
+
+    /// <summary>A card's close button, red under the mouse like a window's own. Hidden until ShowClose shows it.</summary>
+    Border CloseX(Slot slot)
+    {
+        var t = _t;
+        var glyph = new TextBlock { Text = "\uE8BB", FontFamily = Glyphs, FontSize = 9, Foreground = t.Muted, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        var x = new Border
+        {
+            Width = 22, Height = 18, CornerRadius = new CornerRadius(4), Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            Background = Brushes.Transparent, Child = glyph, Cursor = Cursors.Arrow, Visibility = CloseButtons ? Visibility.Hidden : Visibility.Collapsed,
+        };
+        x.MouseEnter += (_, _) => { x.Background = CloseRed; glyph.Foreground = Brushes.White; };
+        x.MouseLeave += (_, _) => { x.Background = Brushes.Transparent; glyph.Foreground = t.Muted; };
+        // Handled, so the card neither starts a drag nor switches to the window.
+        x.MouseLeftButtonDown += (_, e) => { e.Handled = true; _closePress = slot; };
+        x.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            bool pressed = _closePress == slot;
+            _closePress = null;
+            if (pressed) CardCloseClicked?.Invoke(slot);
+        };
+        return x;
+    }
+
+    /// <summary>The close button shows on the selected card and the one under the mouse; elsewhere it keeps its space.</summary>
+    void ShowClose(Border card)
+    {
+        if (!_closeOf.TryGetValue(card, out var x)) return;
+        bool on = CloseButtons && (card.IsMouseOver || _selected == (Slot)card.Tag);
+        x.Visibility = !CloseButtons ? Visibility.Collapsed : on ? Visibility.Visible : Visibility.Hidden;
+        if (!on || !x.IsMouseOver)
+        {
+            // A reused card can come back with the red it had when the view closed under the mouse.
+            x.Background = Brushes.Transparent;
+            if (x.Child is TextBlock g) g.Foreground = _t.Muted;
+        }
     }
 
     Border Pill(string text, Brush bg, Brush fg) => new()
@@ -688,11 +743,13 @@ sealed class Overlay : Window
 
     public void SetSelection(Slot? sel, string? why)
     {
+        _selected = sel;
         foreach (var (slot, card) in _cards)
         {
             bool on = sel is Slot s && s == slot;
             card.Background = on ? _t.CardHi : Brushes.Transparent;
             card.BorderBrush = on ? _t.Accent : Brushes.Transparent;
+            ShowClose(card);
         }
         if (why != null) SetWhy(why);
     }
@@ -753,7 +810,15 @@ sealed class Overlay : Window
         {
             var a = card.PointToScreen(new Point(0, 0));
             var b = card.PointToScreen(new Point(card.Width, card.Height));
-            list.Add(new { sec = slot.Section, hwnd = slot.Hwnd.ToInt64(), tab = slot.Tab, x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y) });
+            // The close button's rect, and whether it shows.
+            var x = _closeOf[card];
+            var xa = x.PointToScreen(new Point(0, 0));
+            var xb = x.PointToScreen(new Point(x.ActualWidth, x.ActualHeight));
+            list.Add(new
+            {
+                sec = slot.Section, hwnd = slot.Hwnd.ToInt64(), tab = slot.Tab, x = (int)a.X, y = (int)a.Y, w = (int)(b.X - a.X), h = (int)(b.Y - a.Y),
+                close = new { x = (int)xa.X, y = (int)xa.Y, w = (int)(xb.X - xa.X), h = (int)(xb.Y - xa.Y), shown = x.Visibility == Visibility.Visible },
+            });
         }
         return list;
     }
@@ -795,5 +860,7 @@ sealed class Overlay : Window
     void PruneCards()
     {
         foreach (var k in _cardCache.Where(kv => kv.Value.session < _session - 2).Select(kv => kv.Key).ToList()) _cardCache.Remove(k);
+        var kept = _cardCache.Values.Select(v => v.card).ToHashSet();
+        foreach (var c in _closeOf.Keys.Where(c => !kept.Contains(c)).ToList()) _closeOf.Remove(c);
     }
 }

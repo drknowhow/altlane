@@ -21,8 +21,10 @@ sealed class SwitchController
     readonly RuleStore _rules;
     readonly Settings _settings;
     readonly Terminals? _terms;
-    readonly DispatcherTimer _showTimer, _prebuild;
+    readonly DispatcherTimer _showTimer, _prebuild, _closeCheck;
     readonly bool _test;
+    // Windows asked to close, by session: one that asks to save stays open, and its card comes back.
+    readonly List<(int sid, IntPtr hwnd)> _closing = new();
     KeyboardHook? _hook;
 
     bool _active, _shown, _sticky;
@@ -53,8 +55,11 @@ sealed class SwitchController
         _showTimer.Tick += (_, _) => { _showTimer.Stop(); if (_active && !_shown) Show(); };
         _prebuild = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(1200) };
         _prebuild.Tick += (_, _) => { _prebuild.Stop(); Prebuild(); };
+        _closeCheck = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(1500) };
+        _closeCheck.Tick += (_, _) => { _closeCheck.Stop(); CheckClosed(); };
         _ov.CardClicked += slot => { if (_active) { _sel = slot; Commit("click"); } };
         _ov.CardMiddleClicked += slot => { if (_active && _settings.MouseActions) { _sel = slot; CloseSelected("middle_click"); } };
+        _ov.CardCloseClicked += slot => { if (_active && _settings.CloseButton) { _sel = slot; CloseSelected("button"); } };
         _ov.CardDropped += (slot, g) => { if (_active) { _sel = slot; Regroup(g.Num, "drag"); } };
         _ov.CardHovered += slot =>
         {
@@ -296,8 +301,8 @@ sealed class SwitchController
         if (_overview)
             return $"Tab  next     `  next group     1–{n}  jump to group     ↑ ↓ ← →  move     type to search     Ctrl+1–{n}  move to group     Del  close window     Enter  switch     Esc  close     Shift+Win+Tab  Task View";
         return _scope != null
-            ? "`  next in this group     Tab  all windows     Esc  cancel"
-            : $"Tab  next     `  next group     1–{n}  jump to group     type to filter     Ctrl+1–{n}  move to group     Del  close     Esc  cancel";
+            ? "`  next in this group     Tab  all windows     Del  close window     Esc  cancel"
+            : $"Tab  next     `  next group     1–{n}  jump to group     type to filter     Ctrl+1–{n}  move to group     Del  close window     Esc  cancel";
     }
 
     string Why(Slot? sel)
@@ -320,6 +325,7 @@ sealed class SwitchController
     {
         if (!_active) return;
         _ov.DragEnabled = _settings.MouseActions && _scope == null;
+        _ov.CloseButtons = _settings.CloseButton;
         _ov.ShowSections(_secs, _sel, _filter, _scope == null ? _hidden : 0, Why(_sel), Hints(), View);
         _shown = true;
         if (_test)
@@ -458,7 +464,7 @@ sealed class SwitchController
         Flash(message);
     }
 
-    /// <param name="via">"del" or "middle_click".</param>
+    /// <param name="via">"del", "button" (the card's close button) or "middle_click".</param>
     void CloseSelected(string via)
     {
         var it = Sections.ItemAt(_secs, _sel);
@@ -469,7 +475,11 @@ sealed class SwitchController
         {
             // The tab's own close button, through UI Automation, so the window's other tabs stay open.
             int sid = _sid;
-            _terms.CloseTab(it.W.Hwnd, tab, ok => Log.Write("close_tab", new { sid, via, ok, title = _test ? it.W.Title : null }));
+            _terms.CloseTab(it.W.Hwnd, tab, ok =>
+            {
+                Log.Write("close_tab", new { sid, via, ok, title = _test ? it.W.Title : null });
+                if (!ok && _active && sid == _sid) Recollect("This tab didn't close.");
+            });
             var key = WinKey.Of(it.W);
             _items = _items.Where(i => WinKey.Of(i.W) != key).ToList();
         }
@@ -479,11 +489,35 @@ sealed class SwitchController
             N.PostMessage(it.W.Hwnd, N.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
             Log.Write("close_window", new { sid = _sid, via, exe = it.W.Exe, title = _test ? it.W.Title : null });
             _items = _items.Where(i => i.W.Hwnd != it.W.Hwnd).ToList();
+            _closing.Add((_sid, it.W.Hwnd));
+            _closeCheck.Stop();
+            _closeCheck.Start();
         }
         _secs = Build();
         flat = Sections.Flat(_secs);
         _sel = flat.Count == 0 ? null : flat[Math.Clamp(idx, 0, flat.Count - 1)];
         if (_shown) Show();
+    }
+
+    /// <summary>A window asked to close that still shows, usually asking whether to save, gets its card back.</summary>
+    void CheckClosed()
+    {
+        var open = _closing.Where(c => c.sid == _sid && N.IsWindow(c.hwnd) && N.IsWindowVisible(c.hwnd) && !Win.IsCloaked(c.hwnd)).Select(c => c.hwnd).ToList();
+        _closing.Clear();
+        if (!_active || open.Count == 0) return;
+        Recollect(null);
+        string? exe = _items.FirstOrDefault(i => open.Contains(i.W.Hwnd))?.W.Exe;
+        Log.Write("close_refused", new { sid = _sid, n = open.Count, exe });
+        Flash(open.Count == 1 && exe != null
+            ? $"{exe} is still open. It may be asking whether to save."
+            : $"{open.Count} windows are still open. They may be asking whether to save.");
+    }
+
+    void Recollect(string? message)
+    {
+        _items = Collect(out _hidden, out _);
+        Rebuild(keepHwnd: true);
+        if (message != null) Flash(message);
     }
 
     void Direct(HookEvent e)

@@ -119,7 +119,7 @@ sealed class Usage
         Check("Typing to filter", Typed);
         Check("Ctrl+number", Regroups);
         Check("Drag to a group", Drags, s.MouseActions);
-        Check("Del or middle-click to close", Closes);
+        Check("Closing windows (Del, close button, middle-click)", Closes);
         Check("Alt+number", Direct, s.DirectJump);
         foreach (var g in groups) Check(g.Name, Groups.GetValueOrDefault(g.Key));
         return list;

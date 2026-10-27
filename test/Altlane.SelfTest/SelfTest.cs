@@ -83,6 +83,7 @@ static partial class SelfTest
             Phase("T14_mouse_and_picks", T14);
             Phase("T15_drag_and_middle_click", T15);
             Phase("T16_terminal_tabs", T16);
+            Phase("T18_close_button", T18);
             Phase(ManyPhase, T17);
             Phase("T12_start_open", T12);
             Phase("C_detector_controls", Controls); // last: Start can hold the foreground for a while after it closes
@@ -773,6 +774,20 @@ static partial class SelfTest
         MouseTo(x + w / 2, y + hh / 2); Pause(60);
         N.GetCursorPos(out var p);
         return p.X >= x && p.X < x + w && p.Y >= y && p.Y < y + hh;
+    }
+
+    /// <summary>Move the cursor onto a card's close button: the card first, which shows the button. True when it got there.</summary>
+    static bool PointAtClose(IntPtr h, List<JsonElement> seen)
+    {
+        if (!PointAt(h, seen)) return false;
+        var v = seen.LastOrDefault(e => Ev(e) == "view");
+        var card = v.GetProperty("cards").EnumerateArray().First(c => c.GetProperty("hwnd").GetInt64() == h.ToInt64());
+        var x = card.GetProperty("close");
+        int cx = x.GetProperty("x").GetInt32() + x.GetProperty("w").GetInt32() / 2, cy = x.GetProperty("y").GetInt32() + x.GetProperty("h").GetInt32() / 2;
+        MouseTo(cx - 3, cy - 2); Pause(40);
+        MouseTo(cx, cy); Pause(80);
+        N.GetCursorPos(out var p);
+        return Math.Abs(p.X - cx) <= 1 && Math.Abs(p.Y - cy) <= 1;
     }
 
     /// <summary>

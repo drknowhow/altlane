@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Windows.Automation;
 
 namespace Altlane;
@@ -275,6 +276,102 @@ static partial class SelfTest
     }
 
     static void Sleep(int ms) => System.Threading.Thread.Sleep(ms);
+
+    /// <summary>
+    /// The close button on two windows of a third test process. In Alt+Tab it shows on the selected card only
+    /// while the mouse is elsewhere, and a click closes golf with Alt+Tab staying open. In the overview hotel
+    /// refuses to close, as an app asking to save would, and its card comes back.
+    /// </summary>
+    static void T18()
+    {
+        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, TestWindows.ExtraReadyEvent);
+        ready.Reset();
+        var extra = Spawn(Environment.ProcessPath!, "testwindows", "--extra", "--minutes", "3", "--log", Path.Combine(_dir, "extra.jsonl"));
+        IntPtr Find(string name) => Win.TopLevel().FirstOrDefault(x => Win.Pid(x) == extra.Id && Win.Title(x) == TestWindows.Prefix + name);
+        IntPtr golf = IntPtr.Zero, hotel = IntPtr.Zero;
+        N.GetCursorPos(out var home);
+        try
+        {
+            var wait = Stopwatch.StartNew();
+            if (ready.WaitOne(15000))
+                while ((golf == IntPtr.Zero || hotel == IntPtr.Zero) && wait.ElapsedMilliseconds < 20000) { golf = Find(TestWindows.Closes); hotel = Find(TestWindows.Asks); Pause(50); }
+            if (golf == IntPtr.Zero || hotel == IntPtr.Zero)
+            {
+                Row("T18", 0, new() { ["what"] = "extra_windows", ["ok"] = false, ["error"] = "golf and hotel didn't appear" });
+                return;
+            }
+            Pause(800); // painted, and seen by Altlane's tracker
+
+            Reset(MouseOrder);
+            MouseTo(2, 2); Pause(60); // off every card, so only the selected card's button shows
+            var seen = new List<JsonElement>();
+            NoSwitch("T18", 0, "close_button_alt_tab", () =>
+            {
+                Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(300);
+                var row = new Dictionary<string, object?>();
+                seen.AddRange(Tail());
+                row["must_button_on_selected_only"] = ButtonOnSelectedOnly(seen.LastOrDefault(e => Ev(e) == "view"), row);
+                row["must_cursor_on_button"] = PointAtClose(golf, seen);
+                Shot("close-hover");
+                Click(); Pause(300);
+                row["must_open_after_click"] = Shown(_overlay);
+                Tap(N.VK_ESCAPE); Pause(40); Up(N.VK_LMENU);
+                var sw = Stopwatch.StartNew();
+                while (N.IsWindow(golf) && sw.ElapsedMilliseconds < 2000) Pause(20);
+                row["must_closed"] = !N.IsWindow(golf);
+                return row;
+            }, ev =>
+            {
+                var all = seen.Concat(ev).ToList();
+                int at = all.FindIndex(e => Ev(e) == "close_window" && Str(e, "via") == "button" && Str(e, "title") == TestWindows.Prefix + TestWindows.Closes);
+                return at >= 0 && all.Skip(at).Any(e => Ev(e) == "view" && !HasCard(e, golf));
+            });
+
+            Reset(MouseOrder);
+            var seen2 = new List<JsonElement>();
+            NoSwitch("T18", 1, "refused_close_card_returns", () =>
+            {
+                WinTab(); Pause(300);
+                var row = OpenChecks("refused_close");
+                row["must_cursor_on_button"] = PointAtClose(hotel, seen2);
+                Click();
+                Pause(2200); // Altlane looks again 1.5 s after asking
+                row["must_open_after_click"] = Shown(_overlay);
+                Shot("close-refused");
+                Tap(N.VK_ESCAPE);
+                row["must_still_open"] = N.IsWindow(hotel) && N.IsWindowVisible(hotel);
+                return row;
+            }, ev =>
+            {
+                var all = seen2.Concat(ev).ToList();
+                int at = all.FindIndex(e => Ev(e) == "close_window" && Str(e, "via") == "button" && Str(e, "title") == TestWindows.Prefix + TestWindows.Asks);
+                var views = all.Skip(at).Where(e => Ev(e) == "view").ToList();
+                // Gone from the view drawn at the click, back in the one drawn when it was still open.
+                return at >= 0 && all.Any(e => Ev(e) == "close_refused") && views.Count >= 2 && !HasCard(views[0], hotel) && HasCard(views[^1], hotel);
+            });
+        }
+        finally
+        {
+            MouseTo(home.X, home.Y); Pause(100);
+            foreach (var h in new[] { golf, hotel }) if (N.IsWindow(h)) N.PostMessage(h, N.WM_CLOSE, IntPtr.Zero, IntPtr.Zero); // hotel's second close goes through
+            if (!extra.WaitForExit(5000)) extra.Kill(); // the run's own process
+            Log.Write("extra_closed", new { exit = extra.HasExited });
+            Pause(300);
+        }
+    }
+
+    static bool HasCard(JsonElement view, IntPtr h) =>
+        view.TryGetProperty("cards", out var cards) && cards.EnumerateArray().Any(c => c.GetProperty("hwnd").GetInt64() == h.ToInt64());
+
+    /// <summary>In a view drawn with the mouse off every card, only the selected card shows its close button.</summary>
+    static bool ButtonOnSelectedOnly(JsonElement v, Dictionary<string, object?> row)
+    {
+        if (v.ValueKind != JsonValueKind.Object || !v.TryGetProperty("sel", out var sel) || sel.ValueKind != JsonValueKind.Number) return false;
+        string selSec = Str(v, "sel_section") ?? "";
+        var shown = v.GetProperty("cards").EnumerateArray().Where(c => c.GetProperty("close").GetProperty("shown").GetBoolean()).ToList();
+        row["buttons_shown"] = shown.Count;
+        return shown.Count == 1 && shown[0].GetProperty("hwnd").GetInt64() == sel.GetInt64() && Str(shown[0], "sec") == selSec;
+    }
 
     /// <summary>Drag a window's card onto a group's column or lane, with injected mouse input, and optionally screenshot the drag.</summary>
     static bool DragCard(IntPtr h, string group, List<JsonElement> seen, string? shot = null)

@@ -82,6 +82,8 @@ sealed class SettingsWindow : Window
         root.Children.Add(Head("Mouse"));
         root.Children.Add(Check("Pointing at a card selects it in Alt+Tab too", s.HoverSelects, v => s.HoverSelects = v));
         root.Children.Add(Note("Only when the mouse moves, so a view that opens under a still pointer keeps its keyboard selection. Win+Tab's overview always works this way.", indent: true));
+        root.Children.Add(Check("Show a close button on the selected card and the one under the mouse", s.CloseButton, v => s.CloseButton = v));
+        root.Children.Add(Note("Del closes the selected window too. An app that asks whether to save stays open, and its card comes back.", indent: true));
         root.Children.Add(Check("Middle-click closes a window; drag a card onto a group to move it there", s.MouseActions, v => s.MouseActions = v));
 
         root.Children.Add(Head("Groups and rules"));

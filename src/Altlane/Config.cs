@@ -41,6 +41,8 @@ sealed class Settings
     public bool NeedsFirst { get; set; }
     /// <summary>Middle-click closes a window; dragging a card onto a group moves it there.</summary>
     public bool MouseActions { get; set; } = true;
+    /// <summary>A close button on the selected card and the one under the mouse.</summary>
+    public bool CloseButton { get; set; } = true;
 
     public const string GridLayout = "grid", ColumnsLayout = "columns";
     [System.Text.Json.Serialization.JsonIgnore] public bool Columns => string.Equals(Layout, ColumnsLayout, StringComparison.OrdinalIgnoreCase);

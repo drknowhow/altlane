@@ -13,7 +13,9 @@ namespace Altlane;
 /// </summary>
 static class TestWindows
 {
-    public const string ReadyEvent = "Altlane.Test.WindowsReady", BulkReadyEvent = "Altlane.Test.BulkReady", Prefix = "Altlane test ";
+    public const string ReadyEvent = "Altlane.Test.WindowsReady", BulkReadyEvent = "Altlane.Test.BulkReady", ExtraReadyEvent = "Altlane.Test.ExtraReady", Prefix = "Altlane test ";
+    /// <summary>--extra's two windows for the close button: golf closes, hotel refuses its first close as an app asking to save would.</summary>
+    public const string Closes = "golf", Asks = "hotel";
     public static readonly string[] Names = { "alpha", "bravo", "charlie", "delta", "echo", "foxtrot" };
     /// <summary>The groups --bulk spreads its windows over, titled "Altlane test bulk GROUP NN".</summary>
     public static readonly string[] BulkGroups = { "agents", "term", "web", "create", "files", "docs", "other" };
@@ -31,7 +33,14 @@ static class TestWindows
 
         var forms = new List<TestForm>();
         int bulk = (int)o.Num("bulk", 0);
-        if (bulk > 0)
+        bool extra = o.ContainsKey("extra");
+        if (extra)
+        {
+            forms.Add(new TestForm(Closes, Colors[2]) { StartPosition = FormStartPosition.Manual, Location = new Point(520, 120) });
+            forms.Add(new TestForm(Asks, Colors[3], asks: true) { StartPosition = FormStartPosition.Manual, Location = new Point(580, 170) });
+            foreach (var f in forms) f.Show();
+        }
+        else if (bulk > 0)
             for (int i = 0; i < bulk; i++)
             {
                 var f = new TestForm($"bulk {BulkGroups[i % BulkGroups.Length]} {i + 1:00}", Colors[i % Colors.Length], new Size(300, 190))
@@ -52,7 +61,7 @@ static class TestWindows
         quit.Start();
 
         Log.Write("windows_ready", new { pid = Environment.ProcessId, count = forms.Count });
-        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, bulk > 0 ? BulkReadyEvent : ReadyEvent);
+        using var ready = new EventWaitHandle(false, EventResetMode.ManualReset, extra ? ExtraReadyEvent : bulk > 0 ? BulkReadyEvent : ReadyEvent);
         ready.Set();
         Application.Run();
         Log.Flush();
@@ -63,14 +72,23 @@ static class TestWindows
 sealed class TestForm : Form
 {
     readonly string _name;
+    bool _asked;
 
-    public TestForm(string name, Color color, Size? size = null)
+    /// <param name="asks">Refuse the first close, as an app asking whether to save would.</param>
+    public TestForm(string name, Color color, Size? size = null, bool asks = false)
     {
         _name = name;
         Text = TestWindows.Prefix + name;
         ClientSize = size ?? new Size(420, 280);
         BackColor = color;
         DoubleBuffered = true;
+        FormClosing += (_, e) =>
+        {
+            if (!asks || _asked) return;
+            _asked = true;
+            e.Cancel = true;
+            Log.Write("close_refused", new { win = _name });
+        };
         FormClosed += (_, _) =>
         {
             Log.Write("closed", new { win = _name });
