@@ -284,6 +284,7 @@ static partial class SelfTest
         var args = new List<string> { "--test", "--config-dir", _cfg, "--log", Path.Combine(_dir, "switcher.jsonl"), "--shot-dir", _dir, "--minutes", "12",
             "--claude-dir", Path.Combine(_dir, "claude-sessions") };
         if (_theme != null) args.AddRange(new[] { "--theme", _theme });
+        args.AddRange(new[] { "--gc-trim-ms", _trimMs.ToString(System.Globalization.CultureInfo.InvariantCulture) });
         _sw = Spawn(app, args.ToArray());
         if (!ready.WaitOne(20000)) throw new AbortException("Altlane never signalled ready");
         _overlay = Win.TopLevel().FirstOrDefault(h => Win.Pid(h) == _sw.Id && Win.Title(h) == "Altlane overlay");

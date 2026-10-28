@@ -12,6 +12,7 @@ namespace Altlane;
 ///   testwindows --bulk N [--minutes N] [--log PATH]   N more, spread over the groups (the speed phase)
 ///   selftest ... --theme dark|light                   Altlane's theme for the run, whatever Windows uses
 ///   selftest ... --only T17,T16                       just those phases, for timing work (verdict NO-GO)
+///   selftest ... --gc-trim-ms N                       Altlane trims its heap N ms after a session (default 2000; 60000 as shipped)
 /// </summary>
 static class Program
 {

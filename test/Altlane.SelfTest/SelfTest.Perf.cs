@@ -60,6 +60,56 @@ static partial class SelfTest
         }
     }
 
+    /// <summary>How long Altlane waits after a session before it trims its heap, in this run.</summary>
+    static int _trimMs = 2000;
+    static readonly List<double> TrimmedShows = new();
+
+    /// <summary>
+    /// Altlane gives its heap's spare room back a while after a session, and this run makes that wait a few
+    /// seconds (--gc-trim-ms). Five times: wait for the trim, then open Alt+Tab and close it with Esc. Each
+    /// round needs a trim first, and the views drawn on a trimmed heap have Alt+Tab's 50 ms target of their own.
+    /// </summary>
+    static void T19()
+    {
+        // A session first: the trim the earlier phases left behind may be over already.
+        Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(300); Tap(N.VK_ESCAPE); Pause(40); Up(N.VK_LMENU);
+        for (int i = 0; i < 5; i++)
+        {
+            var trim = WaitTrim();
+            bool trimmed = trim.ValueKind == JsonValueKind.Object;
+            NoSwitch("T19", i, "alt_tab_after_trim", () =>
+            {
+                Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(300);
+                Tap(N.VK_ESCAPE); Pause(40); Up(N.VK_LMENU);
+                return new()
+                {
+                    ["must_trimmed"] = trimmed,
+                    ["trim_ms"] = trimmed ? trim.GetProperty("ms").GetDouble() : null,
+                    ["freed_mb"] = trimmed ? Math.Round(trim.GetProperty("ws_mb_before").GetDouble() - trim.GetProperty("ws_mb").GetDouble(), 1) : null,
+                    ["committed_mb"] = trimmed ? trim.GetProperty("committed_mb").GetDouble() : null,
+                };
+            }, ev =>
+            {
+                var shows = Nums(ev.Where(e => !Lanes(e)).ToList(), "overlay_composed", "show_ms");
+                TrimmedShows.AddRange(shows);
+                return shows.Length == 1;
+            });
+        }
+    }
+
+    /// <summary>Altlane's next gc_trim line, or an empty element when none comes within the wait and 4 s more.</summary>
+    static JsonElement WaitTrim()
+    {
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < _trimMs + 4000)
+        {
+            var t = Tail().LastOrDefault(e => Ev(e) == "gc_trim");
+            if (t.ValueKind == JsonValueKind.Object) return t;
+            Pause(100);
+        }
+        return default;
+    }
+
     /// <summary>Every open drew the whole busy desktop: as many views as opens, each with a card per window.</summary>
     static bool Busy(List<JsonElement> ev, bool lanes, int opens, int windows)
     {

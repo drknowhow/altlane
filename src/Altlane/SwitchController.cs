@@ -21,7 +21,7 @@ sealed class SwitchController
     readonly RuleStore _rules;
     readonly Settings _settings;
     readonly Terminals? _terms;
-    readonly DispatcherTimer _showTimer, _prebuild, _closeCheck;
+    readonly DispatcherTimer _showTimer, _prebuild, _closeCheck, _trim;
     readonly bool _test;
     // Windows asked to close, by session: one that asks to save stays open, and its card comes back.
     readonly List<(int sid, IntPtr hwnd)> _closing = new();
@@ -57,6 +57,8 @@ sealed class SwitchController
         _prebuild.Tick += (_, _) => { _prebuild.Stop(); Prebuild(); };
         _closeCheck = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(1500) };
         _closeCheck.Tick += (_, _) => { _closeCheck.Stop(); CheckClosed(); };
+        _trim = new DispatcherTimer(DispatcherPriority.ApplicationIdle) { Interval = TimeSpan.FromMinutes(1) };
+        _trim.Tick += (_, _) => { _trim.Stop(); TrimHeap(); };
         _ov.CardClicked += slot => { if (_active) { _sel = slot; Commit("click"); } };
         _ov.CardMiddleClicked += slot => { if (_active && _settings.MouseActions) { _sel = slot; CloseSelected("middle_click"); } };
         _ov.CardCloseClicked += slot => { if (_active && _settings.CloseButton) { _sel = slot; CloseSelected("button"); } };
@@ -107,6 +109,7 @@ sealed class SwitchController
                 Rebuild(keepHwnd: true);
                 if (_test) Log.Write("terminals_changed", new { sid = _sid, tabs = _items.Count(i => i.W.Tab != null) });
             };
+        ArmTrim();
     }
 
     public void Attach(KeyboardHook hook) => _hook = hook;
@@ -127,6 +130,41 @@ sealed class SwitchController
         var secs = Preview();
         int built = _ov.Prebuild(secs, _settings.Columns ? ViewKind.Columns : ViewKind.Grid);
         if (built > 0) Log.Write("prebuild", new { cards = secs.Sum(s => s.Items.Count), built, ms = Math.Round(Clock.Between(t, Stopwatch.GetTimestamp()), 2) });
+        ArmTrim();
+    }
+
+    /// <summary>How long Altlane waits after a session (or a prebuild) before it trims its heap; zero turns trimming off.</summary>
+    public TimeSpan TrimAfter
+    {
+        get => _trim.Interval;
+        set { _trim.Interval = value; ArmTrim(); }
+    }
+
+    void ArmTrim()
+    {
+        _trim.Stop();
+        if (_trim.Interval > TimeSpan.Zero) _trim.Start();
+    }
+
+    /// <summary>
+    /// Give the heap's spare room back once Altlane has been quiet for a while. Between collections the
+    /// GC keeps the young generation's whole budget committed: about 14 MB, against some 6 MB of live
+    /// objects. One collection that compacts and decommits frees that until the next session needs it,
+    /// and faulting the pages back in costs that session a few milliseconds.
+    /// </summary>
+    void TrimHeap()
+    {
+        if (_active || _ov.IsVisible) return;
+        long t = Stopwatch.GetTimestamp(), ws = Environment.WorkingSet;
+        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+        var gc = GC.GetGCMemoryInfo(GCKind.Any);
+        const double MB = 1 << 20;
+        Log.Write("gc_trim", new
+        {
+            ms = Math.Round(Clock.Between(t, Stopwatch.GetTimestamp()), 2),
+            ws_mb_before = Math.Round(ws / MB, 1), ws_mb = Math.Round(Environment.WorkingSet / MB, 1),
+            heap_mb = Math.Round(gc.HeapSizeBytes / MB, 1), committed_mb = Math.Round(gc.TotalCommittedBytes / MB, 1),
+        });
     }
 
     public void OnHook(HookEvent e)
@@ -222,6 +260,7 @@ sealed class SwitchController
         if (_active) Cancel("restart");
         _sid++;
         _active = true; _shown = false; _sticky = false; _overview = false; _filter = ""; _scope = null; _columns = _settings.Columns; _startTs = e.Ts; _activating = IntPtr.Zero;
+        _trim.Stop();
         _pick = "first"; _nav.Clear();
         _startFg = Win.MruKey(N.GetForegroundWindow());
         _terms?.Refresh();
@@ -262,6 +301,7 @@ sealed class SwitchController
         if (_active) Cancel("restart");
         _sid++;
         _active = true; _shown = false; _sticky = true; _overview = true; _columns = true; _filter = ""; _scope = null; _startTs = e.Ts; _activating = IntPtr.Zero;
+        _trim.Stop();
         _pick = "first"; _nav.Clear();
         _startFg = Win.MruKey(N.GetForegroundWindow());
         _terms?.Refresh();
@@ -582,5 +622,6 @@ sealed class SwitchController
         _active = false;
         _shown = false;
         _overview = false;
+        ArmTrim();
     }
 }

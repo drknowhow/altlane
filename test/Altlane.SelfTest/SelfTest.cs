@@ -51,6 +51,7 @@ static partial class SelfTest
         string? app = o.GetValueOrDefault("app") ?? FindApp();
         _theme = o.GetValueOrDefault("theme");
         _only = o.GetValueOrDefault("only")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        _trimMs = (int)o.Num("gc-trim-ms", 2000);
         string? refuse = app == null || !File.Exists(app) ? "Altlane.exe not found: build src/Altlane in Release, or pass --app" : Refusal();
         if (refuse != null) { Log.Write("refused", new { why = refuse }); Log.Flush(); return 4; }
 
@@ -84,6 +85,7 @@ static partial class SelfTest
             Phase("T15_drag_and_middle_click", T15);
             Phase("T16_terminal_tabs", T16);
             Phase("T18_close_button", T18);
+            Phase("T19_heap_trim", T19);
             Phase(ManyPhase, T17);
             Phase("T12_start_open", T12);
             Phase("C_detector_controls", Controls); // last: Start can hold the foreground for a while after it closes

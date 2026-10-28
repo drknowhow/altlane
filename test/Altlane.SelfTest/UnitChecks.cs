@@ -295,6 +295,8 @@ static class UnitChecks
         Check("a ◐ in the middle of a title is not the mark", G("notes ◐ draft")?.Key == "term");
         Check("Bare drops a status mark and its space", Terminals.Bare("◐ fix bug") == "fix bug" && Terminals.Bare("✳ api") == "api" && Terminals.Bare("⠂ x y") == "x y");
         Check("Bare leaves ordinary titles alone", Terminals.Bare("PowerShell") == "PowerShell" && Terminals.Bare("a b") == "a b" && Terminals.Bare("1 file") == "1 file" && Terminals.Bare("◐") == "◐");
+        Check("a terminal title whose spinner turns doesn't re-read tabs", !Terminals.TitleMoved("◐ fix bug", "◑ fix bug") && !Terminals.TitleMoved("✳ api", "◐ api") && !Terminals.TitleMoved("cmd", "cmd"));
+        Check("a new tab name, or a window seen for the first time, re-reads tabs", Terminals.TitleMoved("◐ fix bug", "◐ api") && Terminals.TitleMoved("PowerShell", "cmd") && Terminals.TitleMoved(null, "PowerShell"));
     }
 
     /// <summary>A rules.json an earlier version wrote gets the new Claude Code pattern; one the user edited is left alone.</summary>

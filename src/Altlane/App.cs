@@ -157,10 +157,13 @@ static class App
         string? sessionsDir = test ? o.GetValueOrDefault("claude-dir") : Terminals.DefaultSessionsDir;
         var terms = _terms = new Terminals(_app.Dispatcher, settings.ClaudeStatus ? sessionsDir : null);
         terms.Source(() => Win.TopLevel()
-            .Where(h => Win.Class(h) == "CASCADIA_HOSTING_WINDOW_CLASS" && (!test || Win.Title(h).StartsWith("Altlane test", StringComparison.Ordinal)))
+            .Where(h => Win.Class(h) == Terminals.WindowClass && (!test || Win.Title(h).StartsWith("Altlane test", StringComparison.Ordinal)))
             .ToList());
         terms.Refresh();
+        wt.Foreground += terms.Noticed;
         var ctl = new SwitchController(ov, wt, rules, settings, test, terms) { ShotDir = o.GetValueOrDefault("shot-dir") };
+        // The self-test trims after a few seconds, so its timings include sessions that start on a trimmed heap.
+        if (o.TryGetValue("gc-trim-ms", out var trimMs) && int.TryParse(trimMs, out int ms) && ms >= 0) ctl.TrimAfter = TimeSpan.FromMilliseconds(ms);
         var hook = _hook = new KeyboardHook(_app.Dispatcher, ctl.OnHook);
         void ApplySettings()
         {

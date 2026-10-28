@@ -37,7 +37,7 @@ in a row. An app that asks whether to save stays open, and its card comes back.
 
 ## Install
 
-Download `Altlane-Setup-0.5.1.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
+Download `Altlane-Setup-0.5.2.exe` from [Releases](https://github.com/drknowhow/altlane/releases) and
 run it. It installs for your user only, so there is no admin prompt, and offers to start Altlane when
 you sign in. It needs the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)
 (x64) and offers the download page if that's missing.

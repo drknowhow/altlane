@@ -23,7 +23,10 @@ sealed record AgentInfo(string State, DateTime Since, string? Project);
 /// <summary>
 /// Windows Terminal's tabs and Claude Code's session states, kept on a background thread so Alt+Tab
 /// never waits for UI Automation. Tab lists are refreshed when a session starts (Alt+Tab's show delay
-/// usually covers it) and every few seconds while Altlane runs. Session states come from
+/// usually covers it), when a terminal window's title names something new (a tab opened, closed,
+/// renamed or brought to the front), when a terminal window comes to the front for the first time, and
+/// once a minute in case a change was missed. Reading the tabs is the expensive part: about half a
+/// megabyte of UI Automation objects per window, which a 5 s poll used to spend all day. Session states come from
 /// %USERPROFILE%\.claude\sessions\&lt;pid&gt;.json, which Claude Code writes; a terminal session's tab
 /// title is its mark (✳ ◐ ◑ …), a space and the session's name, which is how a tab finds its session.
 /// Nothing here is logged except counts and timings.
@@ -31,7 +34,8 @@ sealed record AgentInfo(string State, DateTime Since, string? Project);
 sealed class Terminals : IDisposable
 {
     public const string Exe = "WindowsTerminal.exe";
-    const int PeriodMs = 5000;
+    public const string WindowClass = "CASCADIA_HOSTING_WINDOW_CLASS";
+    const int PeriodMs = 60_000, SettleMs = 250;
 
     readonly Dispatcher _ui;
     string? _sessionsDir;
@@ -48,6 +52,12 @@ sealed class Terminals : IDisposable
     readonly Dictionary<(IntPtr, string), long> _lastSelected = new();
     int _refreshQueued;
     Func<IReadOnlyList<IntPtr>>? _windows;
+    // UI thread only: a title-change hook per Windows Terminal process, each terminal window's title as
+    // last seen without its mark, and the short wait that folds a burst of changes into one refresh.
+    readonly Dictionary<uint, IntPtr> _hooks = new();
+    readonly Dictionary<IntPtr, string> _titles = new();
+    readonly N.WinEventProc _onName; // held in a field so the hook's delegate isn't collected
+    readonly DispatcherTimer _settle;
 
     /// <summary>Raised on the UI thread when a refresh found tabs or session states that differ from before.</summary>
     public event Action? Changed;
@@ -59,6 +69,9 @@ sealed class Terminals : IDisposable
         _worker = new Thread(Run) { IsBackground = true, Name = "Altlane terminals" };
         _worker.SetApartmentState(ApartmentState.MTA);
         _worker.Start();
+        _onName = OnNameChange;
+        _settle = new DispatcherTimer(DispatcherPriority.Background, ui) { Interval = TimeSpan.FromMilliseconds(SettleMs) };
+        _settle.Tick += (_, _) => { _settle.Stop(); Refresh(); };
         _timer = new Timer(_ => Tick(), null, PeriodMs, PeriodMs);
         Sessions(sessionsDir);
     }
@@ -76,6 +89,54 @@ sealed class Terminals : IDisposable
 
     /// <summary>Where the background refresh gets the Windows Terminal windows to look at (it runs off the UI thread).</summary>
     public void Source(Func<IReadOnlyList<IntPtr>> windows) => _windows = windows;
+
+    /// <summary>A window came to the front (UI thread): a terminal window not seen before gets its tabs read.</summary>
+    public void Noticed(IntPtr hwnd)
+    {
+        if (_titles.ContainsKey(hwnd) || Win.Class(hwnd) != WindowClass) return;
+        _titles[hwnd] = Bare(Win.Title(hwnd));
+        Soon();
+    }
+
+    /// <summary>
+    /// Whether a terminal window's new title calls for reading its tabs again. Claude Code's spinner
+    /// changes the mark in front several times a second while a session works; only the rest counts.
+    /// </summary>
+    public static bool TitleMoved(string? before, string after) => before == null || Bare(before) != Bare(after);
+
+    void OnNameChange(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        // The window's own title (OBJID_WINDOW, CHILDID_SELF), not a control inside it.
+        if (hwnd == IntPtr.Zero || idObject != 0 || idChild != 0) return;
+        bool known = _titles.TryGetValue(hwnd, out var before);
+        if (!known && Win.Class(hwnd) != WindowClass) return;
+        string title = Win.Title(hwnd);
+        if (!TitleMoved(before, title)) return;
+        _titles[hwnd] = Bare(title);
+        Soon();
+    }
+
+    void Soon() { _settle.Stop(); _settle.Start(); }
+
+    /// <summary>Hook the title changes of each Windows Terminal process that has a window, and forget the rest (UI thread).</summary>
+    void Watch(IReadOnlyList<IntPtr> hwnds)
+    {
+        if (_q.IsAddingCompleted) return;
+        var pids = new HashSet<uint>();
+        foreach (var h in hwnds)
+        {
+            if (Win.Pid(h) is uint pid and > 0) pids.Add(pid);
+            if (!_titles.ContainsKey(h)) _titles[h] = Bare(Win.Title(h));
+        }
+        foreach (var h in _titles.Keys.Where(h => !N.IsWindow(h)).ToList()) _titles.Remove(h);
+        foreach (var pid in _hooks.Keys.Where(p => !pids.Contains(p)).ToList()) { N.UnhookWinEvent(_hooks[pid]); _hooks.Remove(pid); }
+        foreach (var pid in pids.Where(p => !_hooks.ContainsKey(p)))
+        {
+            var hook = N.SetWinEventHook(N.EVENT_OBJECT_NAMECHANGE, N.EVENT_OBJECT_NAMECHANGE, IntPtr.Zero, _onName, pid, 0, N.WINEVENT_OUTOFCONTEXT);
+            if (hook != IntPtr.Zero) _hooks[pid] = hook;
+            else Log.Write("terminals_unhooked", new { pid });
+        }
+    }
 
     void Run()
     {
@@ -137,7 +198,7 @@ sealed class Terminals : IDisposable
         }
         double ms = Clock.Between(t0, Stopwatch.GetTimestamp());
         if (ms > 250) Log.Write("terminals_slow", new { windows = hwnds.Count, ms = Math.Round(ms, 1) });
-        if (changed) _ui.BeginInvoke(() => Changed?.Invoke());
+        _ui.BeginInvoke(() => { Watch(hwnds); if (changed) Changed?.Invoke(); });
     }
 
     /// <summary>A window's tab titles as they stand. Spinner marks change several times a second, so they don't count as a change.</summary>
@@ -221,7 +282,7 @@ sealed class Terminals : IDisposable
 
     /// <summary>
     /// Start (a folder) or stop (null) reading Claude Code's status files, on the UI thread. Settings
-    /// turns this on and off. A folder that doesn't exist yet is looked for again every few seconds,
+    /// turns this on and off. A folder that doesn't exist yet is looked for again once a minute,
     /// never created.
     /// </summary>
     public void Sessions(string? dir)
@@ -303,9 +364,13 @@ sealed class Terminals : IDisposable
         }
     }
 
+    /// <summary>On the UI thread, which set the title-change hooks.</summary>
     public void Dispose()
     {
         _timer.Dispose();
+        _settle.Stop();
+        foreach (var hook in _hooks.Values) N.UnhookWinEvent(hook);
+        _hooks.Clear();
         _debounce?.Dispose();
         _fsw?.Dispose();
         _q.CompleteAdding();

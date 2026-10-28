@@ -30,6 +30,7 @@ static partial class SelfTest
         var hook = sw.FirstOrDefault(e => Ev(e) == "hook_stats");
         var ready = sw.FirstOrDefault(e => Ev(e) == "ready");
         int lags = sw.Count(e => Ev(e) == "dispatch_lag"), crashes = sw.Count(e => Ev(e) is "crash" or "fatal" or "hook_error");
+        double[] trimPause = Nums(sw, "gc_trim", "ms"), trimFreed = sw.Where(e => Ev(e) == "gc_trim").Select(e => e.GetProperty("ws_mb_before").GetDouble() - e.GetProperty("ws_mb").GetDouble()).ToArray();
 
         // What reached the test windows that shouldn't have, by phase. Rows right after a recovery Esc are ours.
         var side = tw.Where(e => Ev(e) is "leak_key" or "leak_char" or "keymenu" or "menuloop")
@@ -81,6 +82,8 @@ static partial class SelfTest
             ["drag_regroups_and_middle_click_closes (T15, 2 steps)"] = All("T15", 2),
             ["terminal_tabs_marks_select_close (T16, 3 steps)"] = All("T16", 3),
             ["close_button_closes_and_refused_card_returns (T18, 2 steps)"] = All("T18", 2),
+            ["alt_tab_after_heap_trim_p95_le_50ms (T19, 5 trims)"] = All("T19", 5) && TrimmedShows.Count == 5 && Pct(TrimmedShows.ToArray(), 0.95) <= 50,
+            ["heap_trim_pause_max_le_50ms"] = trimPause.Length > 0 && trimPause.Max() <= 50,
             ["no_crashes"] = crashes == 0,
             ["detectors_proven (stray key leaks, lone Alt opens menu, lone Win opens Start)"] = controlsFired,
         };
@@ -99,6 +102,11 @@ static partial class SelfTest
             ["busy_alt_tab_show_ms"] = new { n = showMany.Length, p50 = Pct(showMany, 0.5), p95 = Pct(showMany, 0.95), max = showMany.DefaultIfEmpty().Max() },
             ["busy_win_tab_show_ms"] = new { n = showManyLanes.Length, p50 = Pct(showManyLanes, 0.5), p95 = Pct(showManyLanes, 0.95), max = showManyLanes.DefaultIfEmpty().Max() },
             ["lanes_from_key_ms"] = new { p50 = Pct(fromKeyLanes, 0.5), p95 = Pct(fromKeyLanes, 0.95) },
+            ["heap_trim"] = new
+            {
+                after_ms = _trimMs, trims = trimPause.Length, pause_p50_ms = Pct(trimPause, 0.5), pause_max_ms = trimPause.DefaultIfEmpty().Max(),
+                freed_mb_p50 = Pct(trimFreed, 0.5), after_trim_show_ms = TrimmedShows.ToArray(),
+            },
             ["hook"] = hook.ValueKind == JsonValueKind.Object ? JsonSerializer.Deserialize<object>(hook.GetRawText()) : null,
             ["switcher_elevated"] = ready.ValueKind == JsonValueKind.Object ? ready.GetProperty("elevated").ToString() : null,
             ["dispatch_lag_over_30ms"] = lags,

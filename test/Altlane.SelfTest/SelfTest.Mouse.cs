@@ -145,17 +145,12 @@ static partial class SelfTest
         {
             Activate(wt);
             MoveFront(wt);
-            Pause(5500); // Altlane's 5 s tab refresh has read the new window by now
+            Pause(1500); // the window's title and its coming to the front have had its tabs read by now
 
-            NoSwitch("T16", 0, "tab_cards_and_marks", () =>
+            // Both tabs carry a card, tab two marked as waiting, in the session's first view as well as its
+            // last: the tabs were read before Alt+Tab, not by the read every session starts.
+            bool TabCards(JsonElement v)
             {
-                Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(700);
-                Shot("tabs");
-                Tap(N.VK_ESCAPE); Pause(40); Up(N.VK_LMENU);
-                return new();
-            }, ev =>
-            {
-                var v = ev.LastOrDefault(e => Ev(e) == "view");
                 if (v.ValueKind != JsonValueKind.Object) return false;
                 var term = v.GetProperty("sections").EnumerateArray().FirstOrDefault(s => s.GetProperty("key").GetString() == "term");
                 if (term.ValueKind != JsonValueKind.Object) return false;
@@ -163,7 +158,15 @@ static partial class SelfTest
                     .Zip(term.GetProperty("tabs").EnumerateArray().Select(x => x.GetInt32()), term.GetProperty("agents").EnumerateArray().Select(x => x.ValueKind == JsonValueKind.String ? x.GetString() : null))
                     .Where(c => c.First == wt.ToInt64()).ToList();
                 return cards.Count == 2 && cards.Any(c => c.Second == 0 && c.Third == null) && cards.Any(c => c.Second == 1 && c.Third == "needs");
-            });
+            }
+
+            NoSwitch("T16", 0, "tab_cards_and_marks", () =>
+            {
+                Down(N.VK_LMENU); Pause(25); Tap(N.VK_TAB, 20); Pause(700);
+                Shot("tabs");
+                Tap(N.VK_ESCAPE); Pause(40); Up(N.VK_LMENU);
+                return new();
+            }, ev => TabCards(ev.FirstOrDefault(e => Ev(e) == "view")) && TabCards(ev.LastOrDefault(e => Ev(e) == "view")));
 
             var seen = new List<JsonElement>();
             Switch("T16", 1, wt, _ =>
